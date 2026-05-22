@@ -1,0 +1,82 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: jira_ai
+      POSTGRES_PASSWORD: jira_ai_secret
+      POSTGRES_DB: jira_intelligence
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jira_ai -d jira_intelligence"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  chroma:
+    image: chromadb/chroma:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+    environment:
+      ANONYMIZED_TELEMETRY: "false"
+
+  ai-service:
+    build:
+      context: ../ai-service
+      dockerfile: Dockerfile
+    ports:
+      - "3002:3002"
+    env_file:
+      - ../.env
+    environment:
+      AI_SERVICE_PORT: 3002
+      CHROMA_URL: http://chroma:8000
+    depends_on:
+      chroma:
+        condition: service_started
+
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    env_file:
+      - ../.env
+    environment:
+      DATABASE_URL: postgresql://jira_ai:jira_ai_secret@postgres:5432/jira_intelligence
+      REDIS_URL: redis://redis:6379
+      AI_SERVICE_URL: http://ai-service:3002
+      CHROMA_URL: http://chroma:8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      ai-service:
+        condition: service_started
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  redis_data:
+  chroma_data:
