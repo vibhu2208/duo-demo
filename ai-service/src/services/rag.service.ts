@@ -1,6 +1,13 @@
 import { chatCompletion, type ChatContextItem } from '../lib/llm/index.js';
 import { searchSimilar } from '../lib/chroma.js';
 import { buildTicketDocument } from '../lib/text.js';
+import {
+  MIN_SIMILARITY,
+  formatChatAnswer,
+  greetingReply,
+  isGreeting,
+  isSubstantiveQuestion,
+} from '../lib/chat-utils.js';
 
 function parseJsonFromLlm(raw: string): Record<string, unknown> | null {
   try {
@@ -105,20 +112,56 @@ Respond ONLY with valid JSON:
 export async function ragChat(payload: {
   message: string;
   ticketContext?: string;
+  dbContext?: string;
+  dbStats?: { totalTickets: number; ticketsInPrompt: number };
   history?: { role: string; content: string }[];
 }) {
-  const retrieved = await searchSimilar({
-    queryText: payload.ticketContext
-      ? `${payload.ticketContext}\n\nUser question: ${payload.message}`
-      : payload.message,
-    topK: 5,
-  });
+  const message = payload.message.trim();
 
-  const contextBlock = retrieved
-    .map(
-      (r, i) =>
-        `--- Source ${i + 1}: ${r.jiraKey} (${(r.similarityScore * 100).toFixed(0)}% match) ---\n${r.summary}\nResolution: ${r.resolutionSummary}`
-    )
+  if (isGreeting(message)) {
+    return { answer: greetingReply(payload.dbStats), sources: [] };
+  }
+
+  const searchQuery = payload.ticketContext
+    ? `${payload.ticketContext}\n\n${message}`
+    : message;
+
+  const allRetrieved = await searchSimilar({ queryText: searchQuery, topK: 8 });
+  const retrieved = allRetrieved.filter((r) => r.similarityScore >= MIN_SIMILARITY);
+
+  if (!isSubstantiveQuestion(message) && retrieved.length === 0) {
+    return {
+      answer:
+        'I need a bit more detail to search historical tickets. Try asking about a specific error, ticket key, or symptom — e.g. *"Have we seen API timeouts before?"*',
+      sources: [],
+    };
+  }
+
+  const hasDbContext = !!(payload.dbContext && payload.dbContext.length > 100);
+  const dbStats = payload.dbStats;
+
+  const vectorBlock =
+    retrieved.length > 0
+      ? retrieved
+          .map(
+            (r) =>
+              `--- ${r.jiraKey} (${(r.similarityScore * 100).toFixed(0)}% similar) ---\n${r.summary}\nResolution: ${r.resolutionSummary || 'N/A'}`
+          )
+          .join('\n\n')
+      : '';
+
+  const contextBlock = [
+    dbStats
+      ? `Database: ${dbStats.totalTickets} tickets stored; ${dbStats.ticketsInPrompt} included below.`
+      : '',
+    vectorBlock ? `## Vector search matches\n${vectorBlock}` : '',
+    hasDbContext
+      ? `## Tickets from database (PostgreSQL)\n${payload.dbContext}`
+      : !vectorBlock
+        ? 'No vector matches — use the database ticket section above if present.'
+        : '',
+  ]
+    .filter(Boolean)
     .join('\n\n');
 
   const gitlabContext: ChatContextItem[] = retrieved.map((r) => ({
@@ -132,18 +175,29 @@ export async function ragChat(payload: {
     },
   }));
 
-  const system = `You are a Jira Ticket Intelligence Assistant powered by GitLab Duo.
-Answer questions using the provided context from historical Jira tickets.
-If the context is insufficient, say so and suggest what to investigate.
-Be concise, technical, and actionable. Reference ticket keys when relevant. Use markdown headings.`;
+  const system = `You are a Jira Ticket Intelligence assistant (GitLab Duo).
 
-  const user = `${payload.ticketContext ? `Current Ticket Context:\n${payload.ticketContext}\n\n` : ''}Retrieved Historical Tickets:\n${contextBlock || 'No relevant tickets found.'}\n\nUser Question: ${payload.message}`;
+You DO have access to the user's Jira ticket database. Ticket data is provided below from PostgreSQL (full records) and vector search (semantic matches).
+
+RULES:
+- Reply in plain English markdown. NEVER output raw JSON.
+- Use the database ticket section — it is real synced Jira data, not hypothetical.
+- If database tickets are listed below, cite them by key (e.g. DEMO-106).
+- Only say "I don't have context" if BOTH database and vector sections are empty.
+- Keep answers practical: root cause, debugging steps, past fixes.`;
+
+  const user = [
+    payload.ticketContext ? `## Current ticket (user is viewing)\n${payload.ticketContext}\n` : '',
+    `## Historical ticket knowledge base\n${contextBlock || 'No tickets loaded — ask user to run seed or Jira sync.'}`,
+    `## User question\n${message}`,
+  ].join('\n');
 
   const history = (payload.history || [])
     .filter((h) => h.role === 'user' || h.role === 'assistant')
     .map((h) => ({ role: h.role as 'user' | 'assistant', content: h.content }));
 
-  const answer = await chatCompletion(system, user, history, gitlabContext);
+  const rawAnswer = await chatCompletion(system, user, history, gitlabContext);
+  const answer = formatChatAnswer(rawAnswer);
 
   return {
     answer,

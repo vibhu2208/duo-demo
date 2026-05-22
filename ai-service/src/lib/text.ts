@@ -21,7 +21,7 @@ export function buildTicketDocument(payload: {
     payload.comments.length
       ? `Comments:\n${payload.comments.map((c) => cleanText(c)).join('\n')}`
       : '',
-    payload.resolution ? `Resolution: ${cleanText(payload.resolution)}` : '',
+    payload.resolution ? `Root Cause & Resolution:\n${cleanText(payload.resolution)}` : '',
   ];
   return parts.filter(Boolean).join('\n\n');
 }

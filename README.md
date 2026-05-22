@@ -107,7 +107,7 @@ cd frontend && npm run dev
 cd backend && npm run seed:demo
 ```
 
-Creates 10 realistic tickets with comments, AI recommendations, and vector index.
+Seeds **6 NexFlow Cloud** tickets (`NX-1001`–`NX-1006`) from `backend/src/db/demo-tickets.json` with comments, AI recommendations, AUTH-01 duplicate links (`NX-1001`↔`NX-1006`), and vector embeddings.
 
 ## GitLab Duo AI
 

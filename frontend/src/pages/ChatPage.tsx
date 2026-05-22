@@ -213,24 +213,26 @@ export function ChatPage() {
                   <MarkdownText content={m.content} />
                 )}
 
-                {m.sources && m.sources.length > 0 && (
+                {m.sources && m.sources.filter((s) => s.similarityScore >= 0.12).length > 0 && (
                   <div className="mt-4 pt-3 border-t border-border/60">
                     <p className="text-xs font-semibold text-muted-foreground mb-2 uppercase tracking-wide">
-                      Sources
+                      Related tickets
                     </p>
                     <div className="flex flex-wrap gap-2">
-                      {m.sources.map((s, j) => (
-                        <span
-                          key={j}
-                          className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-md bg-background border"
-                        >
-                          <Ticket className="h-3 w-3 text-primary" />
-                          <span className="font-mono font-medium">{s.jiraKey}</span>
-                          <span className="text-muted-foreground">
-                            {(s.similarityScore * 100).toFixed(0)}%
+                      {m.sources
+                        .filter((s) => s.similarityScore >= 0.12)
+                        .map((s, j) => (
+                          <span
+                            key={j}
+                            className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-md bg-background border"
+                          >
+                            <Ticket className="h-3 w-3 text-primary" />
+                            <span className="font-mono font-medium">{s.jiraKey}</span>
+                            <span className="text-muted-foreground">
+                              {(s.similarityScore * 100).toFixed(0)}% match
+                            </span>
                           </span>
-                        </span>
-                      ))}
+                        ))}
                     </div>
                   </div>
                 )}

@@ -1,6 +1,6 @@
 import { query } from '../db/pool.js';
 import { aiClient } from '../lib/ai-client.js';
-import { getTicketById, getTicketComments } from './ticket.service.js';
+import { getTicketById, getTicketComments, getDatabaseContextForChat } from './ticket.service.js';
 
 export async function createSession(userId: string, ticketId?: string, title?: string) {
   const { rows } = await query<{ id: string }>(
@@ -69,10 +69,17 @@ export async function processChatQuery(opts: {
     [sessionId, opts.message]
   );
 
+  const dbContext = await getDatabaseContextForChat(opts.message);
+
   const result = await aiClient.chat({
     message: opts.message,
     ticketId: opts.ticketId,
     ticketContext,
+    dbContext: dbContext.context,
+    dbStats: {
+      totalTickets: dbContext.totalInDatabase,
+      ticketsInPrompt: dbContext.ticketsIncluded,
+    },
     history,
   });
 

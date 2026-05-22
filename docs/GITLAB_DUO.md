@@ -19,12 +19,10 @@ User message (frontend)
 When `AI_PROVIDER=gitlab`:
 
 1. Similar tickets are retrieved from the vector store (Chroma or in-memory).
-2. Each match is sent to GitLab as `additional_context` with `category: "issue"`.
-3. A single request is sent to:
-
-   `POST {GITLAB_URL}/api/v4/chat/completions`
-
-4. GitLab Duo returns a plain-text answer grounded on that context.
+2. Context is bundled into the prompt.
+3. **GitLab.com:** uses GraphQL `aiAction` mutation (REST `/chat/completions` returns 404 on gitlab.com).
+4. **Self-managed:** tries REST first, falls back to GraphQL on 404.
+5. Response is polled from `aiMessages` and returned to the app.
 
 **API docs:** https://docs.gitlab.com/api/chat/
 

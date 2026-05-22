@@ -74,6 +74,8 @@ export const aiClient: {
     message: string;
     ticketId?: string;
     ticketContext?: string;
+    dbContext?: string;
+    dbStats?: { totalTickets: number; ticketsInPrompt: number };
     history?: { role: string; content: string }[];
   }) => Promise<ChatResult>;
   bulkEmbed: (tickets: EmbedPayload[]) => Promise<{ indexed: number; failed: number }>;
@@ -125,10 +127,19 @@ export const aiClient: {
     message: string;
     ticketId?: string;
     ticketContext?: string;
+    dbContext?: string;
+    dbStats?: { totalTickets: number; ticketsInPrompt: number };
     history?: { role: string; content: string }[];
   }) {
-    const { data } = await client.post<ChatResult>('/chat', payload);
-    return data;
+    try {
+      const { data } = await client.post<ChatResult>('/chat', payload);
+      return data;
+    } catch (err: unknown) {
+      const ax = err as { response?: { data?: { error?: string } } };
+      const msg = ax.response?.data?.error;
+      if (msg) throw new Error(msg);
+      throw err;
+    }
   },
 
   async bulkEmbed(tickets: EmbedPayload[]) {

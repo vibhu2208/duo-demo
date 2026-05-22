@@ -106,13 +106,14 @@ export async function getAiSetupStatus() {
   }
 
   if (config.provider === 'gitlab') {
+    const usesGraphql = config.gitlabUrl.includes('gitlab.com');
     return {
       provider: 'gitlab' as const,
       ready: gitlab.ready,
       message: gitlab.ready
-        ? `GitLab Duo ready (${gitlab.username})`
+        ? `GitLab Duo ready (${gitlab.username}) via ${usesGraphql ? 'GraphQL' : 'REST'}`
         : gitlab.tokenError || `GitLab Duo NOT configured. Add to .env: ${gitlab.missing.join(', ')}`,
-      gitlab,
+      gitlab: { ...gitlab, chatMode: usesGraphql ? 'graphql' : 'rest' },
     };
   }
 

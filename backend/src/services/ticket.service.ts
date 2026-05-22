@@ -37,6 +37,69 @@ export async function listTickets(opts: {
   return { tickets: rows, total: parseInt(countResult.rows[0]?.count || '0', 10) };
 }
 
+/** Load ticket text from PostgreSQL for Duo when vector index is empty or weak */
+export async function getDatabaseContextForChat(message: string, limit = 8) {
+  const words = message
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 3 && !['have', 'what', 'when', 'where', 'this', 'that', 'with', 'from', 'been', 'before'].includes(w));
+
+  let rows: JiraTicket[] = [];
+
+  if (words.length > 0) {
+    const pattern = `%${words.slice(0, 5).join('%')}%`;
+    const result = await query<JiraTicket>(
+      `SELECT * FROM jira_tickets
+       WHERE title ILIKE $1 OR description ILIKE $1 OR jira_key ILIKE $1
+          OR $2 = ANY(error_keywords) OR category ILIKE $1 OR root_cause ILIKE $1
+       ORDER BY updated_at DESC LIMIT $3`,
+      [pattern, words[0], limit]
+    );
+    rows = result.rows;
+  }
+
+  if (rows.length < 3) {
+    const recent = await query<JiraTicket>(
+      `SELECT * FROM jira_tickets ORDER BY updated_at DESC LIMIT $1`,
+      [limit]
+    );
+    const seen = new Set(rows.map((r) => r.id));
+    for (const t of recent.rows) {
+      if (!seen.has(t.id)) rows.push(t);
+    }
+  }
+
+  const blocks: string[] = [];
+  for (const t of rows.slice(0, limit)) {
+    const comments = await query<{ author: string; body: string }>(
+      'SELECT author, body FROM ticket_comments WHERE ticket_id = $1 ORDER BY created_at_jira ASC LIMIT 5',
+      [t.id]
+    );
+    blocks.push(
+      [
+        `### ${t.jira_key}: ${t.title}`,
+        `Status: ${t.status} | Category: ${t.category || 'N/A'} | Module: ${t.affected_module || 'N/A'}`,
+        `Description: ${(t.description || '').slice(0, 600)}`,
+        t.root_cause ? `Root cause: ${t.root_cause}` : '',
+        t.final_fix || t.resolution_notes ? `Resolution: ${t.final_fix || t.resolution_notes}` : '',
+        comments.rows.length
+          ? `Comments:\n${comments.rows.map((c) => `- ${c.author}: ${c.body.slice(0, 200)}`).join('\n')}`
+          : '',
+      ]
+        .filter(Boolean)
+        .join('\n')
+    );
+  }
+
+  const count = await query<{ count: string }>('SELECT COUNT(*)::text as count FROM jira_tickets');
+  return {
+    totalInDatabase: parseInt(count.rows[0]?.count || '0', 10),
+    ticketsIncluded: blocks.length,
+    context: blocks.join('\n\n'),
+  };
+}
+
 export async function getTicketById(id: string) {
   const { rows } = await query<JiraTicket>('SELECT * FROM jira_tickets WHERE id = $1', [id]);
   return rows[0] || null;
