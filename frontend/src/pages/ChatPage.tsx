@@ -80,7 +80,7 @@ export function ChatPage() {
   const isMock = aiStatus?.hardcodedMock;
 
   return (
-    <div className="flex flex-col h-[calc(100vh-7rem)] -m-2 md:-m-0">
+    <div className="flex h-full min-h-[480px] flex-col">
       {/* AI provider status */}
       {aiStatus && (
         <div
@@ -108,51 +108,6 @@ export function ChatPage() {
           </div>
         </div>
       )}
-
-      {/* Header */}
-      <div className="shrink-0 rounded-xl border bg-gradient-to-r from-primary/10 via-background to-violet-500/10 p-5 mb-4">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2 mb-1">
-              <div className="h-9 w-9 rounded-lg bg-primary flex items-center justify-center">
-                <Sparkles className="h-5 w-5 text-primary-foreground" />
-              </div>
-              <h2 className="text-xl font-bold">Duo Intelligence Chat</h2>
-              <span
-                className={cn(
-                  'text-xs px-2 py-0.5 rounded-full font-medium border',
-                  duoReady
-                    ? 'bg-green-500/15 text-green-700 dark:text-green-300 border-green-500/30'
-                    : 'bg-primary/15 text-primary border-primary/20'
-                )}
-              >
-                {aiStatus?.providerLabel || 'RAG'}
-              </span>
-            </div>
-            <p className="text-sm text-muted-foreground max-w-xl">
-              Grounded answers from your resolved Jira history. Retrieved tickets are cited below each response.
-              {ticketId && (
-                <span className="text-primary font-medium"> · Linked to active ticket</span>
-              )}
-            </p>
-          </div>
-        </div>
-
-        {/* Quick prompts */}
-        <div className="flex flex-wrap gap-2 mt-4">
-          {SUGGESTIONS.map((s) => (
-            <button
-              key={s.text}
-              onClick={() => send(s.text)}
-              disabled={chatMutation.isPending}
-              className="inline-flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg border bg-background/80 hover:bg-primary/10 hover:border-primary/30 transition-all disabled:opacity-50"
-            >
-              <s.icon className="h-3.5 w-3.5 text-primary" />
-              {s.text}
-            </button>
-          ))}
-        </div>
-      </div>
 
       {/* Messages area */}
       <div className="flex-1 min-h-0 rounded-xl border bg-card/50 backdrop-blur-sm overflow-hidden flex flex-col">
