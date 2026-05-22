@@ -6,7 +6,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
 export const config = {
-  port: parseInt(process.env.BACKEND_PORT || '3001', 10),
+  port: parseInt(process.env.PORT || process.env.BACKEND_PORT || '3001', 10),
   databaseUrl: process.env.DATABASE_URL || 'postgresql://jira_ai:jira_ai_secret@localhost:5432/jira_intelligence',
   redisUrl: process.env.REDIS_URL || 'redis://localhost:6379',
   jwtSecret: process.env.JWT_SECRET || 'dev-secret-change-in-production',

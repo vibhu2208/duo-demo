@@ -21,7 +21,7 @@ function resolveProvider(): AiProvider {
 }
 
 export const config = {
-  port: parseInt(process.env.AI_SERVICE_PORT || '3002', 10),
+  port: parseInt(process.env.PORT || process.env.AI_SERVICE_PORT || '3002', 10),
   provider: resolveProvider(),
 
   gitlabUrl: (process.env.GITLAB_URL || '').replace(/\/$/, ''),
