@@ -71,9 +71,17 @@ export function ChatPage() {
     chatMutation.mutate(text.trim());
   };
 
+  const chatError = chatMutation.error as {
+    response?: { data?: { error?: string } };
+    message?: string;
+    code?: string;
+  } | null;
   const errorMsg =
     chatMutation.isError &&
-    ((chatMutation.error as { response?: { data?: { error?: string } } })?.response?.data?.error ||
+    (chatError?.response?.data?.error ||
+      (chatError?.code === 'ERR_NETWORK' || chatError?.message?.includes('ECONNRESET')
+        ? 'Connection to the server was reset. Wait a moment and try again — on Render free tier the backend may need ~30s to wake up.'
+        : chatError?.message) ||
       'Failed to reach AI service. Is ai-service running on port 3002?');
 
   const duoReady = aiStatus?.aiReady && !aiStatus?.hardcodedMock;

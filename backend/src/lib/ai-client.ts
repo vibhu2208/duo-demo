@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { config } from '../config.js';
+import { formatAiServiceError, withRetry } from './network-utils.js';
 
 const client = axios.create({
   baseURL: config.aiServiceUrl,
@@ -132,13 +133,12 @@ export const aiClient: {
     history?: { role: string; content: string }[];
   }) {
     try {
-      const { data } = await client.post<ChatResult>('/chat', payload);
-      return data;
+      return await withRetry(
+        () => client.post<ChatResult>('/chat', payload).then((r) => r.data),
+        { attempts: 3, delayMs: 2000 }
+      );
     } catch (err: unknown) {
-      const ax = err as { response?: { data?: { error?: string } } };
-      const msg = ax.response?.data?.error;
-      if (msg) throw new Error(msg);
-      throw err;
+      throw new Error(formatAiServiceError(err));
     }
   },
 

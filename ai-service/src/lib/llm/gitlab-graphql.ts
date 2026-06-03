@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { randomUUID } from 'crypto';
 import { config } from '../../config.js';
+import { withRetry } from '../network-utils.js';
 
 function gitlabHeaders() {
   return {
@@ -10,14 +11,18 @@ function gitlabHeaders() {
 }
 
 async function graphql<T>(query: string, variables?: Record<string, unknown>): Promise<T> {
-  const { data, status } = await axios.post<{
-    data?: T;
-    errors?: { message: string }[];
-  }>(`${config.gitlabUrl}/api/graphql`, { query, variables }, {
-    headers: gitlabHeaders(),
-    timeout: 90000,
-    validateStatus: () => true,
-  });
+  const { data, status } = await withRetry(
+    () =>
+      axios.post<{
+        data?: T;
+        errors?: { message: string }[];
+      }>(`${config.gitlabUrl}/api/graphql`, { query, variables }, {
+        headers: gitlabHeaders(),
+        timeout: 90000,
+        validateStatus: () => true,
+      }),
+    { label: 'gitlab-graphql', attempts: 2, delayMs: 1500 }
+  );
 
   if (status >= 400) {
     throw new Error(`GitLab GraphQL HTTP ${status}`);

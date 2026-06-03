@@ -52,7 +52,7 @@ export const jiraApi = {
 
 export const chatApi = {
   query: (data: { message: string; sessionId?: string; ticketId?: string }) =>
-    api.post('/chat/query', data).then((r) => r.data),
+    api.post('/chat/query', data, { timeout: 120000 }).then((r) => r.data),
   sessions: () => api.get('/chat/sessions').then((r) => r.data),
   messages: (sessionId: string) =>
     api.get(`/chat/sessions/${sessionId}/messages`).then((r) => r.data),

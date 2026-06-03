@@ -1,5 +1,6 @@
 import axios, { AxiosError } from 'axios';
-import { config } from '../../config.js';
+import { config, getGitlabSetupStatusAsync } from '../../config.js';
+import { formatNetworkError, withRetry } from '../network-utils.js';
 import { gitlabChatViaGraphql } from './gitlab-graphql.js';
 import type { ChatContextItem, ChatMessage } from './index.js';
 
@@ -29,8 +30,14 @@ function formatGitlabError(err: unknown): string {
     }
     if (status) return `GitLab API error (${status}): ${msg}`;
     if (ax.code === 'ECONNABORTED') return 'GitLab API timed out.';
+    if (ax.code === 'ECONNRESET' || ax.message.toLowerCase().includes('econnreset')) {
+      return (
+        'GitLab closed the connection (ECONNRESET). Retry in a few seconds. ' +
+        'If you use on-prem GitLab, ensure VPN is connected and GITLAB_URL is reachable from this host.'
+      );
+    }
   }
-  return err instanceof Error ? err.message : 'GitLab Duo request failed';
+  return formatNetworkError(err, 'GitLab Duo');
 }
 
 /** Verify PAT works */
@@ -94,9 +101,9 @@ export async function gitlabChatCompletion(
     throw new Error('GitLab Duo requires GITLAB_URL and GITLAB_TOKEN in .env');
   }
 
-  const tokenCheck = await validateGitlabToken();
-  if (!tokenCheck.ok) {
-    throw new Error(tokenCheck.message);
+  const setup = await getGitlabSetupStatusAsync();
+  if (!setup.ready) {
+    throw new Error(setup.tokenError || 'GitLab Duo is not configured');
   }
 
   const fullContent = buildFullPrompt(systemPrompt, userPrompt, history, additionalContext);
@@ -125,15 +132,19 @@ export async function gitlabChatCompletion(
   }));
 
   try {
-    const { data, status } = await axios.post<string | Record<string, unknown>>(
-      url,
-      {
-        content: fullContent,
-        with_clean_history: true,
-        ...(config.gitlabProjectId ? { project_id: config.gitlabProjectId } : {}),
-        ...(contextPayload.length > 0 ? { additional_context: contextPayload } : {}),
-      },
-      { headers: gitlabHeaders(), timeout: 60000, validateStatus: () => true }
+    const { data, status } = await withRetry(
+      () =>
+        axios.post<string | Record<string, unknown>>(
+          url,
+          {
+            content: fullContent,
+            with_clean_history: true,
+            ...(config.gitlabProjectId ? { project_id: config.gitlabProjectId } : {}),
+            ...(contextPayload.length > 0 ? { additional_context: contextPayload } : {}),
+          },
+          { headers: gitlabHeaders(), timeout: 90000, validateStatus: () => true }
+        ),
+      { label: 'gitlab-rest-chat', attempts: 2, delayMs: 2000 }
     );
 
     if (status === 404) {
