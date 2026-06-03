@@ -1,5 +1,7 @@
 # Architecture — Jira Ticket Intelligence MVP
 
+> Full documentation including GitLab Duo integration issues: **[PROJECT_DOCUMENTATION.md](./PROJECT_DOCUMENTATION.md)**
+
 ## System Overview
 
 The platform is a **three-tier monorepo** optimized for fast MVP delivery:

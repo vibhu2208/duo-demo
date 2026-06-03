@@ -123,9 +123,11 @@ See [docs/GITLAB_DUO.md](docs/GITLAB_DUO.md) for full integration guide.
 
 ## Documentation
 
+- **[Complete Project Documentation](docs/PROJECT_DOCUMENTATION.md)** — architecture, GitLab Duo problems & fixes, APIs, troubleshooting
 - [Architecture](docs/ARCHITECTURE.md)
 - [Database Schema](docs/DATABASE.md)
 - [GitLab Duo Setup](docs/GITLAB_DUO.md)
+- [Deployment (Render + Vercel)](docs/DEPLOYMENT.md)
 - [Implementation Roadmap](docs/ROADMAP.md)
 
 ## MVP Constraints

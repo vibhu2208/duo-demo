@@ -1,5 +1,7 @@
 # GitLab Duo AI Integration
 
+> For the full story (404 REST API, 401 token, GraphQL fix, “no context” issues), see **[PROJECT_DOCUMENTATION.md](./PROJECT_DOCUMENTATION.md)** §8–9.
+
 The **ai-service** handles all LLM and embedding work. It supports three providers via `AI_PROVIDER` in `.env`.
 
 ## How it works
