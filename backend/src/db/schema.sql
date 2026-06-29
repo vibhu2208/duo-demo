@@ -19,11 +19,14 @@ CREATE TABLE IF NOT EXISTS jira_config (
   email VARCHAR(255) NOT NULL,
   api_token_encrypted TEXT NOT NULL,
   project_key VARCHAR(50),
+  deployment_type VARCHAR(20) DEFAULT 'server' CHECK (deployment_type IN ('cloud', 'server')),
   last_sync_at TIMESTAMPTZ,
   sync_status VARCHAR(50) DEFAULT 'idle',
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+ALTER TABLE jira_config ADD COLUMN IF NOT EXISTS deployment_type VARCHAR(20) DEFAULT 'server';
 
 CREATE TABLE IF NOT EXISTS jira_tickets (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

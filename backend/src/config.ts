@@ -15,9 +15,14 @@ export const config = {
   frontendUrl: process.env.FRONTEND_URL || 'http://localhost:5173',
   jira: {
     baseUrl: process.env.JIRA_BASE_URL || '',
-    email: process.env.JIRA_EMAIL || '',
+    // JIRA_USERNAME for internal Server/DC; JIRA_EMAIL kept for Cloud backwards compatibility
+    username: process.env.JIRA_USERNAME || process.env.JIRA_EMAIL || '',
     apiToken: process.env.JIRA_API_TOKEN || '',
     projectKey: process.env.JIRA_PROJECT_KEY || '',
+    // server = internal Jira Server/Data Center | cloud = Atlassian Cloud
+    deploymentType: (process.env.JIRA_DEPLOYMENT || 'server') as 'server' | 'cloud',
+    // Set true for internal instances with self-signed TLS certificates
+    insecureSsl: process.env.JIRA_INSECURE_SSL === 'true',
   },
   seed: {
     email: process.env.SEED_ADMIN_EMAIL || 'admin@example.com',

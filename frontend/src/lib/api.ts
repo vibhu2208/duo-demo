@@ -44,8 +44,13 @@ export const ticketsApi = {
 
 export const jiraApi = {
   config: () => api.get('/jira/config').then((r) => r.data),
-  saveConfig: (data: { baseUrl: string; email: string; apiToken: string; projectKey?: string }) =>
-    api.put('/jira/config', data).then((r) => r.data),
+  saveConfig: (data: {
+    baseUrl: string;
+    username: string;
+    apiToken: string;
+    projectKey?: string;
+    deploymentType?: 'cloud' | 'server';
+  }) => api.put('/jira/config', data).then((r) => r.data),
   sync: () => api.post('/jira/sync').then((r) => r.data),
   syncLogs: () => api.get('/jira/sync/logs').then((r) => r.data),
 };

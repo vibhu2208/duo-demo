@@ -7,12 +7,15 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 
+type JiraDeploymentType = 'server' | 'cloud';
+
 export function AdminSyncPage() {
   const { user } = useAuth();
-  const [baseUrl, setBaseUrl] = useState('https://your-domain.atlassian.net');
-  const [email, setEmail] = useState('');
+  const [baseUrl, setBaseUrl] = useState('https://jira.your-company.internal');
+  const [username, setUsername] = useState('');
   const [apiToken, setApiToken] = useState('');
   const [projectKey, setProjectKey] = useState('');
+  const [deploymentType, setDeploymentType] = useState<JiraDeploymentType>('server');
 
   const { data: config, refetch } = useQuery({
     queryKey: ['jira-config'],
@@ -25,7 +28,8 @@ export function AdminSyncPage() {
   });
 
   const saveMutation = useMutation({
-    mutationFn: () => jiraApi.saveConfig({ baseUrl, email, apiToken, projectKey }),
+    mutationFn: () =>
+      jiraApi.saveConfig({ baseUrl, username, apiToken, projectKey, deploymentType }),
     onSuccess: () => refetch(),
   });
 
@@ -35,6 +39,7 @@ export function AdminSyncPage() {
   });
 
   const isAdmin = user?.role === 'admin';
+  const isServer = deploymentType === 'server';
 
   return (
     <div className="space-y-6 max-w-3xl">
@@ -55,11 +60,12 @@ export function AdminSyncPage() {
           </CardTitle>
           <CardDescription>
             {config?.configured
-              ? `Connected via ${config.source} · Project: ${config.projectKey || 'all'}`
+              ? `Connected via ${config.source} · ${config.deploymentType === 'server' ? 'Internal Jira' : 'Jira Cloud'} · Project: ${config.projectKey || 'all'}`
               : 'Not configured — set credentials below or in .env'}
           </CardDescription>
         </CardHeader>
         <CardContent className="text-sm space-y-1">
+          {config?.baseUrl && <p>Base URL: {config.baseUrl}</p>}
           {config?.lastSyncAt && (
             <p>Last sync: {new Date(config.lastSyncAt).toLocaleString()}</p>
           )}
@@ -73,24 +79,59 @@ export function AdminSyncPage() {
             <CardHeader>
               <CardTitle className="text-lg">Jira Credentials</CardTitle>
               <CardDescription>
-                Use a Jira Cloud API token from{' '}
-                <a href="https://id.atlassian.com/manage-profile/security/api-tokens" className="text-primary underline" target="_blank" rel="noreferrer">
-                  Atlassian account settings
-                </a>
+                {isServer
+                  ? 'Internal Jira Server / Data Center — use your Jira username and password or personal access token.'
+                  : 'Jira Cloud — use your Atlassian account email and API token from account settings.'}
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div>
+                <label className="text-sm font-medium">Deployment</label>
+                <select
+                  value={deploymentType}
+                  onChange={(e) => setDeploymentType(e.target.value as JiraDeploymentType)}
+                  className="mt-1 flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                >
+                  <option value="server">Internal (Jira Server / Data Center)</option>
+                  <option value="cloud">Atlassian Cloud</option>
+                </select>
+              </div>
+              <div>
                 <label className="text-sm font-medium">Base URL</label>
-                <Input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://company.atlassian.net" />
+                <Input
+                  value={baseUrl}
+                  onChange={(e) => setBaseUrl(e.target.value)}
+                  placeholder={isServer ? 'https://jira.your-company.internal' : 'https://company.atlassian.net'}
+                />
               </div>
               <div>
-                <label className="text-sm font-medium">Email</label>
-                <Input value={email} onChange={(e) => setEmail(e.target.value)} type="email" />
+                <label className="text-sm font-medium">{isServer ? 'Username' : 'Email'}</label>
+                <Input
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  type={isServer ? 'text' : 'email'}
+                  placeholder={isServer ? 'jira.username' : 'you@company.com'}
+                  autoComplete="username"
+                />
               </div>
               <div>
-                <label className="text-sm font-medium">API Token</label>
-                <Input value={apiToken} onChange={(e) => setApiToken(e.target.value)} type="password" />
+                <label className="text-sm font-medium">
+                  {isServer ? 'Password or Personal Access Token' : 'API Token'}
+                </label>
+                <Input
+                  value={apiToken}
+                  onChange={(e) => setApiToken(e.target.value)}
+                  type="text"
+                  className="font-mono"
+                  placeholder={isServer ? 'your-password-or-PAT' : 'your-atlassian-api-token'}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {isServer
+                    ? 'Enter your Jira password or a personal access token. Shown as plain text so you can verify token format.'
+                    : 'Create an API token in your Atlassian account security settings.'}
+                </p>
               </div>
               <div>
                 <label className="text-sm font-medium">Project Key (optional)</label>
@@ -99,6 +140,12 @@ export function AdminSyncPage() {
               <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}>
                 Save Configuration
               </Button>
+              {saveMutation.isError && (
+                <p className="text-sm text-red-600">
+                  {(saveMutation.error as { response?: { data?: { error?: string } } })?.response?.data?.error ||
+                    'Failed to save configuration'}
+                </p>
+              )}
             </CardContent>
           </Card>
 

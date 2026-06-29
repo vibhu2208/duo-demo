@@ -7,12 +7,26 @@ import { query } from '../db/pool.js';
 const router = Router();
 router.use(authMiddleware);
 
-const configSchema = z.object({
-  baseUrl: z.string().url(),
-  email: z.string().email(),
-  apiToken: z.string().min(10),
-  projectKey: z.string().optional(),
-});
+const configSchema = z
+  .object({
+    baseUrl: z.string().url(),
+    username: z.string().min(1).optional(),
+    email: z.string().min(1).optional(),
+    apiToken: z.string().min(1),
+    projectKey: z.string().optional(),
+    deploymentType: z.enum(['cloud', 'server']).optional(),
+  })
+  .refine((data) => !!(data.username || data.email), {
+    message: 'username is required',
+    path: ['username'],
+  })
+  .transform((data) => ({
+    baseUrl: data.baseUrl.replace(/\/$/, ''),
+    username: (data.username || data.email)!,
+    apiToken: data.apiToken,
+    projectKey: data.projectKey,
+    deploymentType: data.deploymentType || 'server',
+  }));
 
 router.get('/config', async (req: AuthRequest, res) => {
   const env = getJiraConfigFromEnv();
@@ -25,6 +39,7 @@ router.get('/config', async (req: AuthRequest, res) => {
   res.json({
     configured: !!(env || userCfg),
     source: env ? 'environment' : userCfg ? 'database' : null,
+    deploymentType: env?.deploymentType || userCfg?.deploymentType || 'server',
     projectKey: env?.projectKey || userCfg?.projectKey,
     baseUrl: env?.baseUrl || userCfg?.baseUrl,
     lastSyncAt: lastSync.rows[0]?.last_sync_at,

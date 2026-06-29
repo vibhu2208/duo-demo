@@ -1,25 +1,38 @@
+import https from 'https';
 import axios, { AxiosInstance } from 'axios';
 import { query } from '../db/pool.js';
 import { config } from '../config.js';
 import { aiClient } from '../lib/ai-client.js';
 
-interface JiraConfig {
+export type JiraDeploymentType = 'cloud' | 'server';
+
+export interface JiraConfig {
   baseUrl: string;
-  email: string;
+  username: string;
   apiToken: string;
   projectKey?: string;
+  deploymentType: JiraDeploymentType;
+  insecureSsl?: boolean;
+}
+
+function getApiBaseUrl(cfg: JiraConfig): string {
+  const base = cfg.baseUrl.replace(/\/$/, '');
+  return cfg.deploymentType === 'server' ? `${base}/rest/api/2` : `${base}/rest/api/3`;
 }
 
 function createJiraClient(cfg: JiraConfig): AxiosInstance {
-  const auth = Buffer.from(`${cfg.email}:${cfg.apiToken}`).toString('base64');
+  const auth = Buffer.from(`${cfg.username}:${cfg.apiToken}`).toString('base64');
   return axios.create({
-    baseURL: `${cfg.baseUrl.replace(/\/$/, '')}/rest/api/3`,
+    baseURL: getApiBaseUrl(cfg),
     headers: {
       Authorization: `Basic ${auth}`,
       Accept: 'application/json',
       'Content-Type': 'application/json',
     },
     timeout: 60000,
+    ...(cfg.insecureSsl
+      ? { httpsAgent: new https.Agent({ rejectUnauthorized: false }) }
+      : {}),
   });
 }
 
@@ -40,12 +53,14 @@ function extractDescription(desc: unknown): string {
 }
 
 export function getJiraConfigFromEnv(): JiraConfig | null {
-  if (!config.jira.baseUrl || !config.jira.email || !config.jira.apiToken) return null;
+  if (!config.jira.baseUrl || !config.jira.username || !config.jira.apiToken) return null;
   return {
     baseUrl: config.jira.baseUrl,
-    email: config.jira.email,
+    username: config.jira.username,
     apiToken: config.jira.apiToken,
     projectKey: config.jira.projectKey,
+    deploymentType: config.jira.deploymentType,
+    insecureSsl: config.jira.insecureSsl,
   };
 }
 
@@ -53,60 +68,89 @@ export async function getJiraConfigForUser(userId: string): Promise<JiraConfig |
   const env = getJiraConfigFromEnv();
   if (env) return env;
 
-  const { rows } = await query<{ base_url: string; email: string; api_token_encrypted: string; project_key: string }>(
-    'SELECT base_url, email, api_token_encrypted, project_key FROM jira_config WHERE user_id = $1 LIMIT 1',
+  const { rows } = await query<{
+    base_url: string;
+    email: string;
+    api_token_encrypted: string;
+    project_key: string;
+    deployment_type: JiraDeploymentType | null;
+  }>(
+    'SELECT base_url, email, api_token_encrypted, project_key, deployment_type FROM jira_config WHERE user_id = $1 LIMIT 1',
     [userId]
   );
   if (!rows[0]) return null;
   return {
     baseUrl: rows[0].base_url,
-    email: rows[0].email,
+    username: rows[0].email,
     apiToken: rows[0].api_token_encrypted,
     projectKey: rows[0].project_key,
+    deploymentType: rows[0].deployment_type || 'server',
+    insecureSsl: false,
   };
 }
 
 export async function saveJiraConfig(
   userId: string,
-  data: { baseUrl: string; email: string; apiToken: string; projectKey?: string }
+  data: {
+    baseUrl: string;
+    username: string;
+    apiToken: string;
+    projectKey?: string;
+    deploymentType?: JiraDeploymentType;
+  }
 ) {
   await query(
-    `INSERT INTO jira_config (user_id, base_url, email, api_token_encrypted, project_key)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO jira_config (user_id, base_url, email, api_token_encrypted, project_key, deployment_type)
+     VALUES ($1, $2, $3, $4, $5, $6)
      ON CONFLICT (user_id) DO UPDATE SET
        base_url = EXCLUDED.base_url,
        email = EXCLUDED.email,
        api_token_encrypted = EXCLUDED.api_token_encrypted,
        project_key = EXCLUDED.project_key,
+       deployment_type = EXCLUDED.deployment_type,
        updated_at = NOW()`,
-    [userId, data.baseUrl, data.email, data.apiToken, data.projectKey || null]
+    [
+      userId,
+      data.baseUrl,
+      data.username,
+      data.apiToken,
+      data.projectKey || null,
+      data.deploymentType || 'server',
+    ]
   );
 }
 
-async function fetchResolvedIssues(client: AxiosInstance, projectKey: string, startAt = 0) {
+async function fetchResolvedIssues(
+  client: AxiosInstance,
+  deploymentType: JiraDeploymentType,
+  projectKey: string,
+  startAt = 0
+) {
   const jql = projectKey
     ? `project = ${projectKey} AND resolution IS NOT EMPTY ORDER BY resolved DESC`
     : 'resolution IS NOT EMPTY ORDER BY resolved DESC';
 
-  const { data } = await client.get('/search/jql', {
-    params: {
-      jql,
-      startAt,
-      maxResults: 50,
-      fields: 'summary,description,status,priority,labels,assignee,reporter,created,resolution,resolutiondate,comment,issuetype',
-      expand: 'changelog',
-    },
-  });
+  const params = {
+    jql,
+    startAt,
+    maxResults: 50,
+    fields:
+      'summary,description,status,priority,labels,assignee,reporter,created,resolution,resolutiondate,comment,issuetype',
+    expand: 'changelog',
+  };
+
+  const searchPath = deploymentType === 'server' ? '/search' : '/search/jql';
+  const { data } = await client.get(searchPath, { params });
   return data;
 }
 
-async function fetchAllIssues(client: AxiosInstance, projectKey: string) {
+async function fetchAllIssues(client: AxiosInstance, deploymentType: JiraDeploymentType, projectKey: string) {
   const issues: Record<string, unknown>[] = [];
   let startAt = 0;
   let total = 1;
 
   while (startAt < total) {
-    const data = await fetchResolvedIssues(client, projectKey, startAt);
+    const data = await fetchResolvedIssues(client, deploymentType, projectKey, startAt);
     const batch = (data.issues || []) as Record<string, unknown>[];
     issues.push(...batch);
     total = data.total as number;
@@ -201,7 +245,7 @@ export async function syncJiraTickets(userId: string): Promise<{
   let embeddingsIndexed = 0;
 
   try {
-    const issues = await fetchAllIssues(client, projectKey);
+    const issues = await fetchAllIssues(client, cfg.deploymentType, projectKey);
 
     for (const issue of issues) {
       const parsed = parseIssue(issue);
@@ -249,7 +293,7 @@ export async function syncJiraTickets(userId: string): Promise<{
             jira_key, jira_id, title, description, status, priority, labels,
             assignee, reporter, issue_type, resolution, resolution_notes, final_fix,
             resolution_time_hours, created_at_jira, resolved_at_jira, raw_payload
-          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
           RETURNING id`,
           [
             parsed.jiraKey,
@@ -341,7 +385,8 @@ export async function fetchTicketFromJira(userId: string, jiraKey: string) {
   const client = createJiraClient(cfg);
   const { data } = await client.get(`/issue/${jiraKey}`, {
     params: {
-      fields: 'summary,description,status,priority,labels,assignee,reporter,created,resolution,resolutiondate,comment,issuetype',
+      fields:
+        'summary,description,status,priority,labels,assignee,reporter,created,resolution,resolutiondate,comment,issuetype',
     },
   });
   return parseIssue(data as Record<string, unknown>);
