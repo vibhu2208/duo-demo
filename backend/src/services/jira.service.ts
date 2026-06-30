@@ -101,8 +101,9 @@ async function getJiraConfigFromDb(userId: string): Promise<JiraConfig | null> {
     project_key: string;
     deployment_type: JiraDeploymentType | null;
     sync_filter: string | null;
+    insecure_ssl: boolean | null;
   }>(
-    'SELECT base_url, email, api_token_encrypted, project_key, deployment_type, sync_filter FROM jira_config WHERE user_id = $1 LIMIT 1',
+    'SELECT base_url, email, api_token_encrypted, project_key, deployment_type, sync_filter, insecure_ssl FROM jira_config WHERE user_id = $1 LIMIT 1',
     [userId]
   );
   if (!rows[0]) return null;
@@ -113,7 +114,7 @@ async function getJiraConfigFromDb(userId: string): Promise<JiraConfig | null> {
     projectKey: rows[0].project_key,
     deploymentType: rows[0].deployment_type || 'server',
     syncFilter: parseSyncFilter(rows[0].sync_filter),
-    insecureSsl: false,
+    insecureSsl: rows[0].insecure_ssl === true,
   };
 }
 
@@ -132,11 +133,12 @@ export async function saveJiraConfig(
     projectKey?: string;
     deploymentType?: JiraDeploymentType;
     syncFilter?: JiraSyncFilter;
+    insecureSsl?: boolean;
   }
 ) {
   await query(
-    `INSERT INTO jira_config (user_id, base_url, email, api_token_encrypted, project_key, deployment_type, sync_filter)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `INSERT INTO jira_config (user_id, base_url, email, api_token_encrypted, project_key, deployment_type, sync_filter, insecure_ssl)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      ON CONFLICT (user_id) DO UPDATE SET
        base_url = EXCLUDED.base_url,
        email = EXCLUDED.email,
@@ -144,6 +146,7 @@ export async function saveJiraConfig(
        project_key = EXCLUDED.project_key,
        deployment_type = EXCLUDED.deployment_type,
        sync_filter = EXCLUDED.sync_filter,
+       insecure_ssl = EXCLUDED.insecure_ssl,
        updated_at = NOW()`,
     [
       userId,
@@ -153,8 +156,195 @@ export async function saveJiraConfig(
       data.projectKey || null,
       data.deploymentType || 'server',
       data.syncFilter || 'resolved',
+      data.insecureSsl === true,
     ]
   );
+}
+
+export interface JiraConnectionTestResult {
+  ok: boolean;
+  authorization: 'success' | 'failed' | 'not_configured';
+  httpStatus?: number;
+  message: string;
+  details: {
+    baseUrl?: string;
+    apiUrl?: string;
+    deploymentType?: string;
+    authMethod: string;
+    jiraUsername?: string;
+    displayName?: string;
+    emailAddress?: string;
+    serverVersion?: string;
+    serverTitle?: string;
+    projectKey?: string;
+    projectName?: string;
+    projectAccessible?: boolean;
+    syncFilter?: string;
+    syncFilterLabel?: string;
+    matchingTicketCount?: number;
+    insecureSsl?: boolean;
+    testedAt: string;
+  };
+}
+
+const SYNC_FILTER_LABELS: Record<JiraSyncFilter, string> = {
+  resolved: 'Resolved (has resolution)',
+  closed: 'Closed status',
+  both: 'Resolved or Closed',
+};
+
+function authFailureMessage(status: number | undefined, detail: string): string {
+  if (status === 401) {
+    return `Authorization failed (HTTP 401): Invalid username or password. ${detail}`.trim();
+  }
+  if (status === 403) {
+    return `Authorization denied (HTTP 403): Credentials accepted but access forbidden. ${detail}`.trim();
+  }
+  if (status === 404) {
+    return `Jira API not found (HTTP 404): Check Base URL and port (e.g. :8443). ${detail}`.trim();
+  }
+  return detail;
+}
+
+export async function testJiraConnection(
+  userId: string,
+  overrides?: Partial<JiraConfig> & { apiToken?: string }
+): Promise<JiraConnectionTestResult> {
+  const testedAt = new Date().toISOString();
+  const saved = await getJiraConfigForUser(userId);
+
+  const cfg: JiraConfig | null = saved
+    ? {
+        ...saved,
+        ...overrides,
+        apiToken: overrides?.apiToken?.trim() ? overrides.apiToken : saved.apiToken,
+        username: overrides?.username?.trim() ? overrides.username : saved.username,
+      }
+    : overrides?.baseUrl && overrides?.username && overrides?.apiToken
+      ? {
+          baseUrl: overrides.baseUrl,
+          username: overrides.username,
+          apiToken: overrides.apiToken,
+          projectKey: overrides.projectKey,
+          deploymentType: overrides.deploymentType || 'server',
+          syncFilter: overrides.syncFilter || 'resolved',
+          insecureSsl: overrides.insecureSsl === true,
+        }
+      : null;
+
+  if (!cfg?.baseUrl || !cfg.username || !cfg.apiToken) {
+    return {
+      ok: false,
+      authorization: 'not_configured',
+      message: 'Jira is not configured. Enter Base URL, username, and password, then test again.',
+      details: { authMethod: 'Basic', testedAt },
+    };
+  }
+
+  const apiUrl = getApiBaseUrl(cfg);
+  const client = createJiraClient(cfg);
+  const baseDetails = {
+    baseUrl: cfg.baseUrl,
+    apiUrl,
+    deploymentType: cfg.deploymentType,
+    authMethod: 'Basic (username + password or PAT)',
+    projectKey: cfg.projectKey || undefined,
+    syncFilter: cfg.syncFilter,
+    syncFilterLabel: SYNC_FILTER_LABELS[cfg.syncFilter],
+    insecureSsl: cfg.insecureSsl === true,
+    testedAt,
+  };
+
+  try {
+    const myselfPath = cfg.deploymentType === 'server' ? '/myself' : '/myself';
+    const { data: myself, status } = await client.get<{
+      name?: string;
+      displayName?: string;
+      emailAddress?: string;
+      key?: string;
+    }>(myselfPath);
+
+    const details: JiraConnectionTestResult['details'] = {
+      ...baseDetails,
+      jiraUsername: myself.name || myself.key,
+      displayName: myself.displayName,
+      emailAddress: myself.emailAddress,
+    };
+
+    if (cfg.deploymentType === 'server') {
+      try {
+        const { data: serverInfo } = await client.get<{
+          version?: string;
+          serverTitle?: string;
+        }>('/serverInfo');
+        details.serverVersion = serverInfo.version;
+        details.serverTitle = serverInfo.serverTitle;
+      } catch {
+        // optional
+      }
+    }
+
+    if (cfg.projectKey) {
+      try {
+        const { data: project } = await client.get<{ key?: string; name?: string }>(
+          `/project/${cfg.projectKey}`
+        );
+        details.projectAccessible = true;
+        details.projectName = project.name;
+      } catch {
+        details.projectAccessible = false;
+      }
+    }
+
+    try {
+      const jql = buildSyncIssuesJql(cfg.projectKey || '', cfg.deploymentType, cfg.syncFilter);
+      const searchPath = cfg.deploymentType === 'server' ? '/search' : '/search/jql';
+      const { data: searchResult } = await client.get<{ total?: number }>(searchPath, {
+        params: { jql, startAt: 0, maxResults: 0 },
+      });
+      details.matchingTicketCount = searchResult.total ?? 0;
+    } catch {
+      // search may fail even when auth works — reported separately if needed
+    }
+
+    let message = `Authorization successful (HTTP ${status ?? 200}). Logged in as ${details.displayName || details.jiraUsername}.`;
+    if (cfg.projectKey && details.projectAccessible === false) {
+      message += ` Warning: project "${cfg.projectKey}" was not found or is not accessible.`;
+    } else if (cfg.projectKey && details.projectName) {
+      message += ` Project "${cfg.projectKey}" (${details.projectName}) is accessible.`;
+    }
+    if (details.matchingTicketCount !== undefined) {
+      message += ` ${details.matchingTicketCount} ticket(s) match your sync filter.`;
+    }
+
+    return {
+      ok: true,
+      authorization: 'success',
+      httpStatus: status ?? 200,
+      message,
+      details,
+    };
+  } catch (err) {
+    const httpStatus = isAxiosError(err) ? err.response?.status : undefined;
+    const detail = formatJiraApiError(err);
+    let message = authFailureMessage(httpStatus, detail);
+
+    if (/ECONNREFUSED|ENOTFOUND|ETIMEDOUT|certificate|UNABLE_TO_VERIFY/i.test(detail)) {
+      if (/certificate|UNABLE_TO_VERIFY/i.test(detail)) {
+        message = `Cannot connect securely to ${cfg.baseUrl}. Enable "Allow self-signed certificate" if using internal HTTPS (e.g. port 8443). (${detail})`;
+      } else {
+        message = `Cannot reach Jira at ${cfg.baseUrl}. Connect to VPN, verify the URL includes the correct port (e.g. :8443), then retry. (${detail})`;
+      }
+    }
+
+    return {
+      ok: false,
+      authorization: 'failed',
+      httpStatus,
+      message,
+      details: baseDetails,
+    };
+  }
 }
 
 function formatJiraApiError(err: unknown): string {

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { authMiddleware, adminOnly, AuthRequest } from '../middleware/auth.js';
-import { syncJiraTickets, saveJiraConfig, getJiraConfigForUser, getJiraConfigFromEnv } from '../services/jira.service.js';
+import { syncJiraTickets, saveJiraConfig, getJiraConfigForUser, getJiraConfigFromEnv, testJiraConnection } from '../services/jira.service.js';
 import { query } from '../db/pool.js';
 
 const router = Router();
@@ -12,10 +12,11 @@ const configSchema = z
     baseUrl: z.string().url(),
     username: z.string().min(1).optional(),
     email: z.string().min(1).optional(),
-    apiToken: z.string().min(1),
+    apiToken: z.string().optional(),
     projectKey: z.string().optional(),
     deploymentType: z.enum(['cloud', 'server']).optional(),
     syncFilter: z.enum(['resolved', 'closed', 'both']).optional(),
+    insecureSsl: z.boolean().optional(),
   })
   .refine((data) => !!(data.username || data.email), {
     message: 'username is required',
@@ -28,7 +29,19 @@ const configSchema = z
     projectKey: data.projectKey,
     deploymentType: data.deploymentType || 'server',
     syncFilter: data.syncFilter || 'resolved',
+    insecureSsl: data.insecureSsl,
   }));
+
+const testConnectionSchema = z.object({
+  baseUrl: z.string().url().optional(),
+  username: z.string().min(1).optional(),
+  email: z.string().min(1).optional(),
+  apiToken: z.string().optional(),
+  projectKey: z.string().optional(),
+  deploymentType: z.enum(['cloud', 'server']).optional(),
+  syncFilter: z.enum(['resolved', 'closed', 'both']).optional(),
+  insecureSsl: z.boolean().optional(),
+});
 
 router.get('/config', async (req: AuthRequest, res) => {
   const env = getJiraConfigFromEnv();
@@ -63,6 +76,8 @@ router.get('/config', async (req: AuthRequest, res) => {
     baseUrl: userCfg?.baseUrl,
     syncFilter: userCfg?.syncFilter || 'resolved',
     syncFilterLabel: syncFilterLabels[userCfg?.syncFilter || 'resolved'],
+    insecureSsl: userCfg?.insecureSsl === true,
+    username: userCfg?.username,
     lastSyncAt: lastSync.rows[0]?.last_sync_at,
     syncStatus: lastSync.rows[0]?.sync_status || 'idle',
   });
@@ -72,8 +87,35 @@ router.put('/config', adminOnly, async (req: AuthRequest, res) => {
   const parsed = configSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
 
-  await saveJiraConfig(req.user!.id, parsed.data);
+  let data = parsed.data;
+  if (!data.apiToken?.trim()) {
+    const existing = await getJiraConfigForUser(req.user!.id);
+    if (!existing?.apiToken) {
+      return res.status(400).json({ error: 'Password or API token is required for new Jira configuration' });
+    }
+    data = { ...data, apiToken: existing.apiToken };
+  }
+
+  await saveJiraConfig(req.user!.id, data);
   res.json({ success: true });
+});
+
+router.post('/test-connection', adminOnly, async (req: AuthRequest, res) => {
+  const parsed = testConnectionSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+
+  const body = parsed.data;
+  const result = await testJiraConnection(req.user!.id, {
+    baseUrl: body.baseUrl?.replace(/\/$/, ''),
+    username: body.username || body.email,
+    apiToken: body.apiToken,
+    projectKey: body.projectKey,
+    deploymentType: body.deploymentType,
+    syncFilter: body.syncFilter,
+    insecureSsl: body.insecureSsl,
+  });
+
+  res.json(result);
 });
 
 router.post('/sync', adminOnly, async (req: AuthRequest, res) => {

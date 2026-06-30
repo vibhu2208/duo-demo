@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS jira_config (
 
 ALTER TABLE jira_config ADD COLUMN IF NOT EXISTS deployment_type VARCHAR(20) DEFAULT 'server';
 ALTER TABLE jira_config ADD COLUMN IF NOT EXISTS sync_filter VARCHAR(20) DEFAULT 'resolved';
+ALTER TABLE jira_config ADD COLUMN IF NOT EXISTS insecure_ssl BOOLEAN DEFAULT false;
 
 CREATE TABLE IF NOT EXISTS jira_tickets (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

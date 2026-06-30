@@ -42,16 +42,52 @@ export const ticketsApi = {
   import: (jiraKey: string) => api.post('/tickets/import', { jiraKey }).then((r) => r.data),
 };
 
+export type JiraConnectionTestResult = {
+  ok: boolean;
+  authorization: 'success' | 'failed' | 'not_configured';
+  httpStatus?: number;
+  message: string;
+  details: {
+    baseUrl?: string;
+    apiUrl?: string;
+    deploymentType?: string;
+    authMethod: string;
+    jiraUsername?: string;
+    displayName?: string;
+    emailAddress?: string;
+    serverVersion?: string;
+    serverTitle?: string;
+    projectKey?: string;
+    projectName?: string;
+    projectAccessible?: boolean;
+    syncFilter?: string;
+    syncFilterLabel?: string;
+    matchingTicketCount?: number;
+    insecureSsl?: boolean;
+    testedAt: string;
+  };
+};
+
 export const jiraApi = {
   config: () => api.get('/jira/config').then((r) => r.data),
   saveConfig: (data: {
     baseUrl: string;
     username: string;
-    apiToken: string;
+    apiToken?: string;
     projectKey?: string;
     deploymentType?: 'cloud' | 'server';
     syncFilter?: 'resolved' | 'closed' | 'both';
+    insecureSsl?: boolean;
   }) => api.put('/jira/config', data).then((r) => r.data),
+  testConnection: (data?: {
+    baseUrl?: string;
+    username?: string;
+    apiToken?: string;
+    projectKey?: string;
+    deploymentType?: 'cloud' | 'server';
+    syncFilter?: 'resolved' | 'closed' | 'both';
+    insecureSsl?: boolean;
+  }) => api.post<JiraConnectionTestResult>('/jira/test-connection', data ?? {}).then((r) => r.data),
   sync: () => api.post('/jira/sync').then((r) => r.data),
   syncLogs: () => api.get('/jira/sync/logs').then((r) => r.data),
 };
