@@ -21,6 +21,8 @@ export const config = {
     projectKey: process.env.JIRA_PROJECT_KEY || '',
     // server = internal Jira Server/Data Center | cloud = Atlassian Cloud
     deploymentType: (process.env.JIRA_DEPLOYMENT || 'server') as 'server' | 'cloud',
+    // resolved | closed | both
+    syncFilter: (process.env.JIRA_SYNC_FILTER || 'resolved') as 'resolved' | 'closed' | 'both',
     // Set true for internal instances with self-signed TLS certificates
     insecureSsl: process.env.JIRA_INSECURE_SSL === 'true',
   },

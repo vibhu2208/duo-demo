@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { RefreshCw, CheckCircle, AlertCircle } from 'lucide-react';
 import { jiraApi } from '@/lib/api';
@@ -8,6 +8,25 @@ import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 
 type JiraDeploymentType = 'server' | 'cloud';
+type JiraSyncFilter = 'resolved' | 'closed' | 'both';
+
+const SYNC_FILTER_OPTIONS: { value: JiraSyncFilter; label: string; description: string }[] = [
+  {
+    value: 'resolved',
+    label: 'Resolved only',
+    description: 'Tickets with a resolution set (Fixed, Done, etc.)',
+  },
+  {
+    value: 'closed',
+    label: 'Closed status only',
+    description: 'Tickets where Jira status is Closed',
+  },
+  {
+    value: 'both',
+    label: 'Resolved or Closed',
+    description: 'Either has a resolution or status is Closed',
+  },
+];
 
 export function AdminSyncPage() {
   const { user } = useAuth();
@@ -16,11 +35,20 @@ export function AdminSyncPage() {
   const [apiToken, setApiToken] = useState('');
   const [projectKey, setProjectKey] = useState('');
   const [deploymentType, setDeploymentType] = useState<JiraDeploymentType>('server');
+  const [syncFilter, setSyncFilter] = useState<JiraSyncFilter>('closed');
 
   const { data: config, refetch } = useQuery({
     queryKey: ['jira-config'],
     queryFn: jiraApi.config,
   });
+
+  useEffect(() => {
+    if (!config) return;
+    if (config.baseUrl) setBaseUrl(config.baseUrl);
+    if (config.projectKey) setProjectKey(config.projectKey);
+    if (config.deploymentType) setDeploymentType(config.deploymentType);
+    if (config.syncFilter) setSyncFilter(config.syncFilter);
+  }, [config]);
 
   const { data: logs } = useQuery({
     queryKey: ['sync-logs'],
@@ -29,7 +57,7 @@ export function AdminSyncPage() {
 
   const saveMutation = useMutation({
     mutationFn: () =>
-      jiraApi.saveConfig({ baseUrl, username, apiToken, projectKey, deploymentType }),
+      jiraApi.saveConfig({ baseUrl, username, apiToken, projectKey, deploymentType, syncFilter }),
     onSuccess: () => refetch(),
   });
 
@@ -66,6 +94,7 @@ export function AdminSyncPage() {
         </CardHeader>
         <CardContent className="text-sm space-y-1">
           {config?.baseUrl && <p>Base URL: {config.baseUrl}</p>}
+          {config?.syncFilterLabel && <p>Sync filter: {config.syncFilterLabel}</p>}
           {config?.lastSyncAt && (
             <p>Last sync: {new Date(config.lastSyncAt).toLocaleString()}</p>
           )}
@@ -137,6 +166,23 @@ export function AdminSyncPage() {
                 <label className="text-sm font-medium">Project Key (optional)</label>
                 <Input value={projectKey} onChange={(e) => setProjectKey(e.target.value)} placeholder="PROJ" />
               </div>
+              <div>
+                <label className="text-sm font-medium">Sync filter</label>
+                <select
+                  value={syncFilter}
+                  onChange={(e) => setSyncFilter(e.target.value as JiraSyncFilter)}
+                  className="mt-1 flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                >
+                  {SYNC_FILTER_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {SYNC_FILTER_OPTIONS.find((o) => o.value === syncFilter)?.description}
+                </p>
+              </div>
               <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}>
                 Save Configuration
               </Button>
@@ -153,7 +199,7 @@ export function AdminSyncPage() {
             <CardHeader>
               <CardTitle className="text-lg">Sync Historical Tickets</CardTitle>
               <CardDescription>
-                Fetches resolved tickets, stores in PostgreSQL, generates embeddings in ChromaDB
+                Fetches tickets matching your sync filter, stores in PostgreSQL, generates embeddings
               </CardDescription>
             </CardHeader>
             <CardContent>

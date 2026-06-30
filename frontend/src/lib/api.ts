@@ -50,6 +50,7 @@ export const jiraApi = {
     apiToken: string;
     projectKey?: string;
     deploymentType?: 'cloud' | 'server';
+    syncFilter?: 'resolved' | 'closed' | 'both';
   }) => api.put('/jira/config', data).then((r) => r.data),
   sync: () => api.post('/jira/sync').then((r) => r.data),
   syncLogs: () => api.get('/jira/sync/logs').then((r) => r.data),

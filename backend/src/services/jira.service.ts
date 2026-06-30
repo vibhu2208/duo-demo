@@ -1,10 +1,11 @@
 import https from 'https';
-import axios, { AxiosInstance } from 'axios';
+import axios, { AxiosInstance, isAxiosError } from 'axios';
 import { query } from '../db/pool.js';
 import { config } from '../config.js';
 import { aiClient } from '../lib/ai-client.js';
 
 export type JiraDeploymentType = 'cloud' | 'server';
+export type JiraSyncFilter = 'resolved' | 'closed' | 'both';
 
 export interface JiraConfig {
   baseUrl: string;
@@ -12,6 +13,7 @@ export interface JiraConfig {
   apiToken: string;
   projectKey?: string;
   deploymentType: JiraDeploymentType;
+  syncFilter: JiraSyncFilter;
   insecureSsl?: boolean;
 }
 
@@ -52,30 +54,55 @@ function extractDescription(desc: unknown): string {
   return adfToText(desc);
 }
 
+const JIRA_ENV_PLACEHOLDERS = [
+  'your-company.internal',
+  'your-jira-username',
+  'your-jira-password',
+  'your-atlassian-api-token',
+  'your-password-or-pat',
+];
+
+function isPlaceholderJiraEnvValue(value: string): boolean {
+  const lower = value.toLowerCase();
+  return JIRA_ENV_PLACEHOLDERS.some((p) => lower.includes(p));
+}
+
 export function getJiraConfigFromEnv(): JiraConfig | null {
-  if (!config.jira.baseUrl || !config.jira.username || !config.jira.apiToken) return null;
+  const { baseUrl, username, apiToken, projectKey, deploymentType, insecureSsl } = config.jira;
+  if (!baseUrl || !username || !apiToken) return null;
+  if (
+    isPlaceholderJiraEnvValue(baseUrl) ||
+    isPlaceholderJiraEnvValue(username) ||
+    isPlaceholderJiraEnvValue(apiToken)
+  ) {
+    return null;
+  }
   return {
-    baseUrl: config.jira.baseUrl,
-    username: config.jira.username,
-    apiToken: config.jira.apiToken,
-    projectKey: config.jira.projectKey,
-    deploymentType: config.jira.deploymentType,
-    insecureSsl: config.jira.insecureSsl,
+    baseUrl,
+    username,
+    apiToken,
+    projectKey,
+    deploymentType,
+    syncFilter: parseSyncFilter(config.jira.syncFilter),
+    insecureSsl,
   };
 }
 
-export async function getJiraConfigForUser(userId: string): Promise<JiraConfig | null> {
-  const env = getJiraConfigFromEnv();
-  if (env) return env;
+function parseSyncFilter(value: string | null | undefined): JiraSyncFilter {
+  if (value === 'closed' || value === 'both') return value;
+  return 'resolved';
+}
 
+async function getJiraConfigFromDb(userId: string): Promise<JiraConfig | null> {
   const { rows } = await query<{
     base_url: string;
     email: string;
     api_token_encrypted: string;
     project_key: string;
     deployment_type: JiraDeploymentType | null;
+    sync_filter: string | null;
   }>(
-    'SELECT base_url, email, api_token_encrypted, project_key, deployment_type FROM jira_config WHERE user_id = $1 LIMIT 1',
+    'SELECT base_url, email, api_token_encrypted, project_key, deployment_type, sync_filter FROM jira_config WHERE user_id = $1 LIMIT 1',
     [userId]
   );
   if (!rows[0]) return null;
@@ -85,8 +112,15 @@ export async function getJiraConfigForUser(userId: string): Promise<JiraConfig |
     apiToken: rows[0].api_token_encrypted,
     projectKey: rows[0].project_key,
     deploymentType: rows[0].deployment_type || 'server',
+    syncFilter: parseSyncFilter(rows[0].sync_filter),
     insecureSsl: false,
   };
+}
+
+export async function getJiraConfigForUser(userId: string): Promise<JiraConfig | null> {
+  const db = await getJiraConfigFromDb(userId);
+  if (db) return db;
+  return getJiraConfigFromEnv();
 }
 
 export async function saveJiraConfig(
@@ -97,17 +131,19 @@ export async function saveJiraConfig(
     apiToken: string;
     projectKey?: string;
     deploymentType?: JiraDeploymentType;
+    syncFilter?: JiraSyncFilter;
   }
 ) {
   await query(
-    `INSERT INTO jira_config (user_id, base_url, email, api_token_encrypted, project_key, deployment_type)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO jira_config (user_id, base_url, email, api_token_encrypted, project_key, deployment_type, sync_filter)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      ON CONFLICT (user_id) DO UPDATE SET
        base_url = EXCLUDED.base_url,
        email = EXCLUDED.email,
        api_token_encrypted = EXCLUDED.api_token_encrypted,
        project_key = EXCLUDED.project_key,
        deployment_type = EXCLUDED.deployment_type,
+       sync_filter = EXCLUDED.sync_filter,
        updated_at = NOW()`,
     [
       userId,
@@ -116,19 +152,72 @@ export async function saveJiraConfig(
       data.apiToken,
       data.projectKey || null,
       data.deploymentType || 'server',
+      data.syncFilter || 'resolved',
     ]
   );
+}
+
+function formatJiraApiError(err: unknown): string {
+  if (!isAxiosError(err)) {
+    return err instanceof Error ? err.message : 'Sync failed';
+  }
+  const status = err.response?.status;
+  const data = err.response?.data;
+  if (data && typeof data === 'object') {
+    const messages = (data as { errorMessages?: string[] }).errorMessages;
+    if (messages?.length) {
+      return `Jira API error (${status}): ${messages.join('; ')}`;
+    }
+    const errors = (data as { errors?: Record<string, string> }).errors;
+    if (errors && Object.keys(errors).length) {
+      return `Jira API error (${status}): ${Object.values(errors).join('; ')}`;
+    }
+    const message = (data as { message?: string }).message;
+    if (message) {
+      return `Jira API error (${status}): ${message}`;
+    }
+  }
+  return err.message;
+}
+
+function buildSyncIssuesJql(
+  projectKey: string,
+  deploymentType: JiraDeploymentType,
+  syncFilter: JiraSyncFilter
+): string {
+  const orderBy =
+    syncFilter === 'closed'
+      ? 'updated DESC'
+      : deploymentType === 'server'
+        ? 'resolutiondate DESC'
+        : 'updated DESC';
+
+  let statusClause: string;
+  switch (syncFilter) {
+    case 'closed':
+      statusClause = 'status = Closed';
+      break;
+    case 'both':
+      statusClause = '(resolution IS NOT EMPTY OR status = Closed)';
+      break;
+    default:
+      statusClause = 'resolution IS NOT EMPTY';
+  }
+
+  if (projectKey) {
+    return `project = "${projectKey}" AND ${statusClause} ORDER BY ${orderBy}`;
+  }
+  return `${statusClause} ORDER BY ${orderBy}`;
 }
 
 async function fetchResolvedIssues(
   client: AxiosInstance,
   deploymentType: JiraDeploymentType,
   projectKey: string,
+  syncFilter: JiraSyncFilter,
   startAt = 0
 ) {
-  const jql = projectKey
-    ? `project = ${projectKey} AND resolution IS NOT EMPTY ORDER BY resolved DESC`
-    : 'resolution IS NOT EMPTY ORDER BY resolved DESC';
+  const jql = buildSyncIssuesJql(projectKey, deploymentType, syncFilter);
 
   const params = {
     jql,
@@ -136,7 +225,6 @@ async function fetchResolvedIssues(
     maxResults: 50,
     fields:
       'summary,description,status,priority,labels,assignee,reporter,created,resolution,resolutiondate,comment,issuetype',
-    expand: 'changelog',
   };
 
   const searchPath = deploymentType === 'server' ? '/search' : '/search/jql';
@@ -144,13 +232,18 @@ async function fetchResolvedIssues(
   return data;
 }
 
-async function fetchAllIssues(client: AxiosInstance, deploymentType: JiraDeploymentType, projectKey: string) {
+async function fetchAllIssues(
+  client: AxiosInstance,
+  deploymentType: JiraDeploymentType,
+  projectKey: string,
+  syncFilter: JiraSyncFilter
+) {
   const issues: Record<string, unknown>[] = [];
   let startAt = 0;
   let total = 1;
 
   while (startAt < total) {
-    const data = await fetchResolvedIssues(client, deploymentType, projectKey, startAt);
+    const data = await fetchResolvedIssues(client, deploymentType, projectKey, syncFilter, startAt);
     const batch = (data.issues || []) as Record<string, unknown>[];
     issues.push(...batch);
     total = data.total as number;
@@ -245,7 +338,7 @@ export async function syncJiraTickets(userId: string): Promise<{
   let embeddingsIndexed = 0;
 
   try {
-    const issues = await fetchAllIssues(client, cfg.deploymentType, projectKey);
+    const issues = await fetchAllIssues(client, cfg.deploymentType, projectKey, cfg.syncFilter);
 
     for (const issue of issues) {
       const parsed = parseIssue(issue);
@@ -369,12 +462,15 @@ export async function syncJiraTickets(userId: string): Promise<{
 
     return { fetched: issues.length, created, updated, embeddingsIndexed };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : 'Sync failed';
+    let msg = formatJiraApiError(err);
+    if (/ECONNREFUSED|ENOTFOUND|ETIMEDOUT/i.test(msg)) {
+      msg = `Cannot reach Jira at ${cfg.baseUrl}. Connect to VPN if this is an internal Jira instance, verify the Base URL, and retry. (${msg})`;
+    }
     await query(`UPDATE sync_logs SET status='failed', error_message=$2, completed_at=NOW() WHERE id=$1`, [
       logId,
       msg,
     ]);
-    throw err;
+    throw new Error(msg);
   }
 }
 

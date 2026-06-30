@@ -15,6 +15,7 @@ const configSchema = z
     apiToken: z.string().min(1),
     projectKey: z.string().optional(),
     deploymentType: z.enum(['cloud', 'server']).optional(),
+    syncFilter: z.enum(['resolved', 'closed', 'both']).optional(),
   })
   .refine((data) => !!(data.username || data.email), {
     message: 'username is required',
@@ -26,6 +27,7 @@ const configSchema = z
     apiToken: data.apiToken,
     projectKey: data.projectKey,
     deploymentType: data.deploymentType || 'server',
+    syncFilter: data.syncFilter || 'resolved',
   }));
 
 router.get('/config', async (req: AuthRequest, res) => {
@@ -36,12 +38,31 @@ router.get('/config', async (req: AuthRequest, res) => {
     [req.user!.id]
   );
 
+  const dbRow = await query<{
+    base_url: string;
+    project_key: string;
+    deployment_type: string | null;
+    sync_filter: string | null;
+  }>(
+    'SELECT base_url, project_key, deployment_type, sync_filter FROM jira_config WHERE user_id = $1 LIMIT 1',
+    [req.user!.id]
+  );
+  const dbCfg = dbRow.rows[0];
+
+  const syncFilterLabels: Record<string, string> = {
+    resolved: 'Resolved (has resolution)',
+    closed: 'Closed status',
+    both: 'Resolved or Closed',
+  };
+
   res.json({
-    configured: !!(env || userCfg),
-    source: env ? 'environment' : userCfg ? 'database' : null,
-    deploymentType: env?.deploymentType || userCfg?.deploymentType || 'server',
-    projectKey: env?.projectKey || userCfg?.projectKey,
-    baseUrl: env?.baseUrl || userCfg?.baseUrl,
+    configured: !!userCfg,
+    source: dbCfg ? 'database' : env ? 'environment' : null,
+    deploymentType: userCfg?.deploymentType || 'server',
+    projectKey: userCfg?.projectKey,
+    baseUrl: userCfg?.baseUrl,
+    syncFilter: userCfg?.syncFilter || 'resolved',
+    syncFilterLabel: syncFilterLabels[userCfg?.syncFilter || 'resolved'],
     lastSyncAt: lastSync.rows[0]?.last_sync_at,
     syncStatus: lastSync.rows[0]?.sync_status || 'idle',
   });
