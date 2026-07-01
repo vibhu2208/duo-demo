@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import { Shield, AlertTriangle, Scan, Loader2, X } from 'lucide-react';
-import { githubApi, getApiErrorMessage, type GitHubRepo } from '@/lib/api';
+import { gitlabApi, getApiErrorMessage, type GitLabProject } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -34,50 +34,44 @@ function NewScanModal({
   onClose: () => void;
   onSuccess: (scanId: string) => void;
 }) {
-  const [selectedRepo, setSelectedRepo] = useState('');
+  const [selectedProject, setSelectedProject] = useState('');
   const [branch, setBranch] = useState('main');
-  const [manualRepo, setManualRepo] = useState('');
+  const [manualProject, setManualProject] = useState('');
   const [useManual, setUseManual] = useState(false);
 
-  const { data: reposData, isLoading: reposLoading, isError: reposError, error: reposFetchError } = useQuery({
-    queryKey: ['github-repos'],
-    queryFn: githubApi.repos,
+  const { data: projectsData, isLoading: projectsLoading, isError: projectsError, error: projectsFetchError } = useQuery({
+    queryKey: ['gitlab-projects'],
+    queryFn: gitlabApi.projects,
     enabled: open,
     retry: 1,
   });
 
   const scanMutation = useMutation({
-    mutationFn: githubApi.scan,
+    mutationFn: gitlabApi.scan,
     onSuccess: (scan) => {
       onSuccess(scan.id);
       onClose();
     },
   });
 
-  const repos: GitHubRepo[] = reposData?.repos || [];
-  const selected = repos.find((r) => r.fullName === selectedRepo);
-  const manualParts = manualRepo.trim().split('/').filter(Boolean);
-  const manualOwner = manualParts.length >= 2 ? manualParts[0] : '';
-  const manualName = manualParts.length >= 2 ? manualParts.slice(1).join('/') : '';
+  const projects: GitLabProject[] = projectsData?.projects || [];
+  const selected = projects.find((p) => p.projectPath === selectedProject);
 
-  const handleRepoChange = (fullName: string) => {
-    setSelectedRepo(fullName);
+  const handleProjectChange = (projectPath: string) => {
+    setSelectedProject(projectPath);
     setUseManual(false);
-    const repo = repos.find((r) => r.fullName === fullName);
-    if (repo) setBranch(repo.defaultBranch);
+    const project = projects.find((p) => p.projectPath === projectPath);
+    if (project) setBranch(project.defaultBranch);
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (useManual && manualOwner && manualName) {
-      scanMutation.mutate({ owner: manualOwner, repo: manualName, branch });
-      return;
-    }
-    if (!selected) return;
-    scanMutation.mutate({ owner: selected.owner, repo: selected.name, branch });
+    const projectPath = useManual ? manualProject.trim() : selectedProject;
+    if (!projectPath) return;
+    scanMutation.mutate({ projectPath, branch });
   };
 
-  const canSubmit = useManual ? manualOwner && manualName : !!selectedRepo;
+  const canSubmit = useManual ? !!manualProject.trim() : !!selectedProject;
 
   if (!open) return null;
 
@@ -91,37 +85,38 @@ function NewScanModal({
               <X className="h-4 w-4" />
             </button>
           </div>
-          <CardDescription>Select a repository to scan with AI-powered code review</CardDescription>
+          <CardDescription>Select a GitLab project to scan with GitLab Duo AI review</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label className="text-sm font-medium">Repository</label>
-              {reposLoading ? (
-                <p className="text-sm text-muted-foreground mt-1">Loading repositories...</p>
+              <label className="text-sm font-medium">GitLab project</label>
+              {projectsLoading ? (
+                <p className="text-sm text-muted-foreground mt-1">Loading projects...</p>
               ) : (
                 <>
                   <select
                     className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
-                    value={useManual ? '' : selectedRepo}
-                    onChange={(e) => handleRepoChange(e.target.value)}
+                    value={useManual ? '' : selectedProject}
+                    onChange={(e) => handleProjectChange(e.target.value)}
                     disabled={useManual}
                   >
-                    <option value="">Select a repository</option>
-                    {repos.map((r) => (
-                      <option key={r.fullName} value={r.fullName}>
-                        {r.fullName} {r.private ? '(private)' : ''}
+                    <option value="">Select a project</option>
+                    {projects.map((p) => (
+                      <option key={p.projectPath} value={p.projectPath}>
+                        {p.fullName} {p.private ? '(private)' : ''}
                       </option>
                     ))}
                   </select>
-                  {reposError && (
+                  {projectsError && (
                     <p className="text-sm text-red-600 mt-2">
-                      {getApiErrorMessage(reposFetchError, 'Could not load repositories')}
+                      {getApiErrorMessage(projectsFetchError, 'Could not load projects')}
                     </p>
                   )}
-                  {!reposLoading && repos.length === 0 && !reposError && (
+                  {!projectsLoading && projects.length === 0 && !projectsError && (
                     <p className="text-sm text-amber-700 dark:text-amber-300 mt-2">
-                      No repositories returned. Enter one manually below (e.g. <code>username/repo-name</code>).
+                      No projects returned. Enter one manually below (e.g.{' '}
+                      <code>capgemini/team/my-project</code>).
                     </p>
                   )}
                 </>
@@ -134,14 +129,14 @@ function NewScanModal({
                   checked={useManual}
                   onChange={(e) => setUseManual(e.target.checked)}
                 />
-                Enter repository manually
+                Enter project path manually
               </label>
               {useManual && (
                 <Input
                   className="mt-2"
-                  value={manualRepo}
-                  onChange={(e) => setManualRepo(e.target.value)}
-                  placeholder="owner/repo-name"
+                  value={manualProject}
+                  onChange={(e) => setManualProject(e.target.value)}
+                  placeholder="group/subgroup/project-name"
                 />
               )}
             </div>
@@ -186,21 +181,21 @@ export function SecurityDashboardPage() {
   const queryClient = useQueryClient();
   const [scanModalOpen, setScanModalOpen] = useState(false);
 
-  const { data: config } = useQuery({ queryKey: ['github-config'], queryFn: githubApi.config });
+  const { data: config } = useQuery({ queryKey: ['gitlab-config'], queryFn: gitlabApi.config });
   const { data: stats, isLoading: statsLoading } = useQuery({
-    queryKey: ['github-dashboard'],
-    queryFn: githubApi.dashboard,
+    queryKey: ['gitlab-dashboard'],
+    queryFn: gitlabApi.dashboard,
   });
   const { data: scansData, isLoading: scansLoading } = useQuery({
-    queryKey: ['github-scans'],
-    queryFn: () => githubApi.scans({ limit: 20 }),
+    queryKey: ['gitlab-scans'],
+    queryFn: () => gitlabApi.scans({ limit: 20 }),
   });
 
   const isAdmin = user?.role === 'admin';
 
   const handleScanSuccess = (scanId: string) => {
-    queryClient.invalidateQueries({ queryKey: ['github-scans'] });
-    queryClient.invalidateQueries({ queryKey: ['github-dashboard'] });
+    queryClient.invalidateQueries({ queryKey: ['gitlab-scans'] });
+    queryClient.invalidateQueries({ queryKey: ['gitlab-dashboard'] });
     navigate(`/security/scans/${scanId}`);
   };
 
@@ -213,7 +208,7 @@ export function SecurityDashboardPage() {
             Code Security
           </h2>
           <p className="text-muted-foreground">
-            AI-assisted vulnerability review of GitHub repositories
+            AI-assisted vulnerability review of GitLab on-prem projects (Capgemini)
           </p>
         </div>
         {isAdmin && (
@@ -225,19 +220,19 @@ export function SecurityDashboardPage() {
       </div>
 
       <div className="rounded-md border border-amber-200 bg-amber-50 dark:bg-amber-950 dark:border-amber-900 p-3 text-sm text-amber-800 dark:text-amber-200">
-        <strong>Advisory only:</strong> Findings are generated by AI and should be verified before acting.
-        This is not a substitute for certified SAST tools like CodeQL or Semgrep.
+        <strong>Advisory only:</strong> Findings are generated by GitLab Duo AI and should be verified before acting.
+        This is not a substitute for certified SAST tools.
       </div>
 
       {!config?.configured && (
         <div className="rounded-md border p-4 text-sm">
-          GitHub is not configured.{' '}
+          GitLab is not configured.{' '}
           {isAdmin ? (
             <Link to="/admin" className="text-primary underline">
-              Add your PAT in Sync Settings
+              Add your GitLab URL and PAT in Sync Settings
             </Link>
           ) : (
-            'Ask an admin to configure GitHub access.'
+            'Ask an admin to configure GitLab access.'
           )}
         </div>
       )}
@@ -286,7 +281,7 @@ export function SecurityDashboardPage() {
       <Card>
         <CardHeader>
           <CardTitle className="text-lg">Recent Scans</CardTitle>
-          <CardDescription>History of AI security reviews</CardDescription>
+          <CardDescription>History of AI security reviews on GitLab projects</CardDescription>
         </CardHeader>
         <CardContent>
           {scansLoading ? (

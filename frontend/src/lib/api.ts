@@ -33,7 +33,7 @@ export function getApiErrorMessage(err: unknown, fallback: string): string {
     return 'Backend API not found (404). Ensure the backend is running and BACKEND_PORT in .env matches — then restart the frontend dev server.';
   }
   if (ax.response?.status === 403) {
-    return 'Admin access required to save GitHub configuration.';
+    return 'Admin access required to save GitLab configuration.';
   }
   const data = ax.response?.data;
   if (typeof data?.error === 'string') return data.error;
@@ -134,27 +134,30 @@ export const aiApi = {
   status: () => api.get('/ai/status').then((r) => r.data),
 };
 
-export type GitHubConnectionTestResult = {
+export type GitLabConnectionTestResult = {
   ok: boolean;
   authorization: 'success' | 'failed' | 'not_configured';
   httpStatus?: number;
   message: string;
   details: {
-    login?: string;
+    baseUrl?: string;
+    username?: string;
     name?: string;
-    defaultOwner?: string;
-    repoCount?: number;
+    defaultGroup?: string;
+    projectCount?: number;
+    insecureSsl?: boolean;
     testedAt: string;
   };
 };
 
-export type GitHubRepo = {
+export type GitLabProject = {
   fullName: string;
-  owner: string;
+  projectPath: string;
   name: string;
   defaultBranch: string;
   private: boolean;
   description: string | null;
+  webUrl: string | null;
 };
 
 export type SecurityScanRun = {
@@ -186,20 +189,28 @@ export type SecurityFinding = {
   confidence: number | null;
 };
 
-export const githubApi = {
-  config: () => api.get('/github/config').then((r) => r.data),
-  saveConfig: (data: { token: string; defaultOwner?: string }) =>
-    api.put('/github/config', data).then((r) => r.data),
-  testConnection: (data?: { token?: string; defaultOwner?: string }) =>
-    api.post<GitHubConnectionTestResult>('/github/test-connection', data ?? {}).then((r) => r.data),
-  repos: () => api.get<{ repos: GitHubRepo[] }>('/github/repos').then((r) => r.data),
-  dashboard: () => api.get('/github/dashboard').then((r) => r.data),
-  scan: (data: { owner: string; repo: string; branch?: string }) =>
-    api.post<SecurityScanRun>('/github/scan', data, { timeout: 180000 }).then((r) => r.data),
+export const gitlabApi = {
+  config: () => api.get('/gitlab/config').then((r) => r.data),
+  saveConfig: (data: {
+    baseUrl: string;
+    token?: string;
+    defaultGroup?: string;
+    insecureSsl?: boolean;
+  }) => api.put('/gitlab/config', data).then((r) => r.data),
+  testConnection: (data?: {
+    baseUrl?: string;
+    token?: string;
+    defaultGroup?: string;
+    insecureSsl?: boolean;
+  }) => api.post<GitLabConnectionTestResult>('/gitlab/test-connection', data ?? {}).then((r) => r.data),
+  projects: () => api.get<{ projects: GitLabProject[] }>('/gitlab/projects').then((r) => r.data),
+  dashboard: () => api.get('/gitlab/dashboard').then((r) => r.data),
+  scan: (data: { projectPath: string; branch?: string }) =>
+    api.post<SecurityScanRun>('/gitlab/scan', data, { timeout: 180000 }).then((r) => r.data),
   scans: (params?: { limit?: number; offset?: number }) =>
-    api.get<{ scans: SecurityScanRun[]; total: number }>('/github/scans', { params }).then((r) => r.data),
+    api.get<{ scans: SecurityScanRun[]; total: number }>('/gitlab/scans', { params }).then((r) => r.data),
   getScan: (id: string) =>
-    api.get<SecurityScanRun & { findings: SecurityFinding[] }>(`/github/scans/${id}`).then((r) => r.data),
+    api.get<SecurityScanRun & { findings: SecurityFinding[] }>(`/gitlab/scans/${id}`).then((r) => r.data),
   findings: (id: string, params?: { severity?: string; category?: string }) =>
-    api.get<{ findings: SecurityFinding[] }>(`/github/scans/${id}/findings`, { params }).then((r) => r.data),
+    api.get<{ findings: SecurityFinding[] }>(`/gitlab/scans/${id}/findings`, { params }).then((r) => r.data),
 };

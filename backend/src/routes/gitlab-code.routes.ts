@@ -3,58 +3,69 @@ import { z } from 'zod';
 import { isAxiosError } from 'axios';
 import { authMiddleware, adminOnly, AuthRequest } from '../middleware/auth.js';
 import {
-  getGitHubConfigForUser,
-  getGitHubConfigFromEnv,
-  saveGitHubConfig,
-  testGitHubConnection,
-  listAccessibleRepos,
+  getGitLabCodeConfigForUser,
+  getGitLabCodeConfigFromEnv,
+  saveGitLabCodeConfig,
+  testGitLabCodeConnection,
+  listAccessibleProjects,
   runSecurityScan,
   listSecurityScans,
   getSecurityScan,
   listScanFindings,
   getSecurityDashboardStats,
-} from '../services/github.service.js';
+} from '../services/gitlab-code.service.js';
 import { query } from '../db/pool.js';
 
 const router = Router();
 router.use(authMiddleware);
 
 const configSchema = z.object({
+  baseUrl: z.string().url(),
   token: z.string().min(1),
-  defaultOwner: z.string().optional(),
+  defaultGroup: z.string().optional(),
+  insecureSsl: z.boolean().optional(),
 });
 
 const testConnectionSchema = z.object({
+  baseUrl: z.string().url().optional(),
   token: z.string().optional(),
-  defaultOwner: z.string().optional(),
+  defaultGroup: z.string().optional(),
+  insecureSsl: z.boolean().optional(),
 });
 
 const scanSchema = z.object({
-  owner: z.string().min(1),
-  repo: z.string().min(1),
+  projectPath: z.string().min(1),
   branch: z.string().optional(),
 });
 
 router.get('/config', async (req: AuthRequest, res) => {
-  const env = getGitHubConfigFromEnv();
-  const userCfg = await getGitHubConfigForUser(req.user!.id);
+  const env = getGitLabCodeConfigFromEnv();
+  const userCfg = await getGitLabCodeConfigForUser(req.user!.id);
 
-  const dbRow = await query<{ default_owner: string | null; last_scan_at: Date | null; scan_status: string | null }>(
-    'SELECT default_owner, last_scan_at, scan_status FROM github_config WHERE user_id = $1 LIMIT 1',
+  const dbRow = await query<{
+    base_url: string;
+    default_group: string | null;
+    last_scan_at: Date | null;
+    scan_status: string | null;
+    insecure_ssl: boolean | null;
+  }>(
+    'SELECT base_url, default_group, last_scan_at, scan_status, insecure_ssl FROM gitlab_code_config WHERE user_id = $1 LIMIT 1',
     [req.user!.id]
   );
 
-  let login: string | undefined;
+  let username: string | undefined;
   if (userCfg) {
-    const test = await testGitHubConnection(req.user!.id);
-    login = test.details.login;
+    const test = await testGitLabCodeConnection(req.user!.id);
+    username = test.details.username;
   }
 
   res.json({
     configured: !!userCfg,
     source: dbRow.rows[0] ? 'database' : env ? 'environment' : null,
-    defaultOwner: userCfg?.defaultOwner,
-    login,
+    baseUrl: userCfg?.baseUrl,
+    defaultGroup: userCfg?.defaultGroup,
+    insecureSsl: userCfg?.insecureSsl === true,
+    username,
     lastScanAt: dbRow.rows[0]?.last_scan_at?.toISOString() || null,
     scanStatus: dbRow.rows[0]?.scan_status || 'idle',
   });
@@ -64,35 +75,46 @@ router.put('/config', adminOnly, async (req: AuthRequest, res) => {
   const parsed = configSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
 
-  await saveGitHubConfig(req.user!.id, parsed.data);
+  let data = parsed.data;
+  if (!data.token?.trim()) {
+    const existing = await getGitLabCodeConfigForUser(req.user!.id);
+    if (!existing?.token) {
+      return res.status(400).json({ error: 'GitLab token is required for new configuration' });
+    }
+    data = { ...data, token: existing.token };
+  }
+
+  await saveGitLabCodeConfig(req.user!.id, data);
   res.json({ success: true });
 });
 
 router.post('/test-connection', adminOnly, async (req: AuthRequest, res) => {
-  const parsed = testConnectionSchema.safeParse(req.body);
+  const parsed = testConnectionSchema.safeParse(req.body ?? {});
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
 
-  const result = await testGitHubConnection(req.user!.id, {
+  const result = await testGitLabCodeConnection(req.user!.id, {
+    baseUrl: parsed.data.baseUrl?.replace(/\/$/, ''),
     token: parsed.data.token,
-    defaultOwner: parsed.data.defaultOwner,
+    defaultGroup: parsed.data.defaultGroup,
+    insecureSsl: parsed.data.insecureSsl,
   });
   res.json(result);
 });
 
-router.get('/repos', async (req: AuthRequest, res) => {
+router.get('/projects', async (req: AuthRequest, res) => {
   try {
-    const cfg = await getGitHubConfigForUser(req.user!.id);
-    if (!cfg) return res.status(400).json({ error: 'GitHub is not configured' });
+    const cfg = await getGitLabCodeConfigForUser(req.user!.id);
+    if (!cfg) return res.status(400).json({ error: 'GitLab is not configured' });
 
-    const repos = await listAccessibleRepos(cfg.token, cfg.defaultOwner);
-    res.json({ repos });
+    const projects = await listAccessibleProjects(cfg);
+    res.json({ projects });
   } catch (err) {
     const message = isAxiosError(err)
-      ? String(err.response?.data?.message || err.message)
+      ? String((err.response?.data as { message?: string })?.message || err.message)
       : err instanceof Error
         ? err.message
-        : 'Failed to list repositories';
-    console.error('[github/repos]', message);
+        : 'Failed to list projects';
+    console.error('[gitlab/projects]', message);
     res.status(502).json({ error: message });
   }
 });

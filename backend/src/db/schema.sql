@@ -165,13 +165,15 @@ CREATE TABLE IF NOT EXISTS analytics_events (
 
 CREATE INDEX IF NOT EXISTS idx_analytics_events_type ON analytics_events(event_type);
 
--- GitHub Code Security vertical
+-- GitLab Code Security (on-prem Capgemini)
 
-CREATE TABLE IF NOT EXISTS github_config (
+CREATE TABLE IF NOT EXISTS gitlab_code_config (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id UUID UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+  base_url VARCHAR(500) NOT NULL,
   token_encrypted TEXT NOT NULL,
-  default_owner VARCHAR(255),
+  default_group VARCHAR(255),
+  insecure_ssl BOOLEAN DEFAULT false,
   last_scan_at TIMESTAMPTZ,
   scan_status VARCHAR(50) DEFAULT 'idle',
   created_at TIMESTAMPTZ DEFAULT NOW(),

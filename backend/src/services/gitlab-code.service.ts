@@ -1,133 +1,176 @@
+import https from 'https';
 import axios, { AxiosInstance, isAxiosError } from 'axios';
 import { query } from '../db/pool.js';
 import { config } from '../config.js';
 import { aiClient, type CodeReviewFinding, type CodeReviewResult } from '../lib/ai-client.js';
+import {
+  MAX_FILE_SIZE,
+  TreeEntry,
+  detectLanguage,
+  selectFilesForScan,
+} from './code-scan-utils.js';
 
-export interface GitHubConfig {
+export interface GitLabCodeConfig {
+  baseUrl: string;
   token: string;
-  defaultOwner?: string;
+  defaultGroup?: string;
+  insecureSsl?: boolean;
 }
 
-const GITHUB_API = 'https://api.github.com';
-const MAX_FILE_SIZE = 50 * 1024;
-const MAX_FILES_PER_SCAN = 25;
-const PRIORITY_SEGMENTS = ['src/', 'backend/', 'frontend/', 'routes/', 'middleware/', 'auth/', 'config/', 'services/', 'api/'];
-
-const SCAN_EXTENSIONS = new Set([
-  '.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.java', '.sql',
-]);
-const SCAN_FILENAMES = new Set(['dockerfile', 'docker-compose.yml', '.env.example', 'package.json']);
-
-const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.git', 'coverage', 'vendor']);
-
-const GITHUB_ENV_PLACEHOLDERS = ['ghp_your-token-here', 'your-token-here'];
-const GITHUB_OWNER_PLACEHOLDERS = ['optional-org-or-user', 'org-or-username', 'your-github-username'];
+const GITLAB_TOKEN_PLACEHOLDERS = ['glpat-your-token-here', 'your-token-here', 'glpat-xxx'];
+const GITLAB_GROUP_PLACEHOLDERS = ['optional-group', 'your-group', 'capgemini-group'];
 
 function isPlaceholderToken(value: string): boolean {
   const lower = value.toLowerCase();
-  return GITHUB_ENV_PLACEHOLDERS.some((p) => lower.includes(p));
+  return GITLAB_TOKEN_PLACEHOLDERS.some((p) => lower.includes(p));
 }
 
-function normalizeDefaultOwner(value: string | undefined): string | undefined {
+function normalizeGroup(value: string | undefined): string | undefined {
   if (!value?.trim()) return undefined;
   const trimmed = value.trim();
   const lower = trimmed.toLowerCase();
-  if (GITHUB_OWNER_PLACEHOLDERS.some((p) => lower === p || lower.includes(p))) return undefined;
+  if (GITLAB_GROUP_PLACEHOLDERS.some((p) => lower === p || lower.includes(p))) return undefined;
   return trimmed;
 }
 
-export function getGitHubConfigFromEnv(): GitHubConfig | null {
-  const { token, defaultOwner } = config.github;
-  if (!token || isPlaceholderToken(token)) return null;
-  return { token, defaultOwner: normalizeDefaultOwner(defaultOwner) };
+export function getGitLabCodeConfigFromEnv(): GitLabCodeConfig | null {
+  const { baseUrl, token, defaultGroup, insecureSsl } = config.gitlab;
+  if (!baseUrl || !token || isPlaceholderToken(token)) return null;
+  return {
+    baseUrl,
+    token,
+    defaultGroup: normalizeGroup(defaultGroup),
+    insecureSsl,
+  };
 }
 
-async function getGitHubConfigFromDb(userId: string): Promise<GitHubConfig | null> {
-  const { rows } = await query<{ token_encrypted: string; default_owner: string | null }>(
-    'SELECT token_encrypted, default_owner FROM github_config WHERE user_id = $1 LIMIT 1',
+async function getGitLabCodeConfigFromDb(userId: string): Promise<GitLabCodeConfig | null> {
+  const { rows } = await query<{
+    base_url: string;
+    token_encrypted: string;
+    default_group: string | null;
+    insecure_ssl: boolean | null;
+  }>(
+    'SELECT base_url, token_encrypted, default_group, insecure_ssl FROM gitlab_code_config WHERE user_id = $1 LIMIT 1',
     [userId]
   );
   if (!rows[0]) return null;
   return {
+    baseUrl: rows[0].base_url,
     token: rows[0].token_encrypted,
-    defaultOwner: normalizeDefaultOwner(rows[0].default_owner || undefined),
+    defaultGroup: normalizeGroup(rows[0].default_group || undefined),
+    insecureSsl: rows[0].insecure_ssl === true,
   };
 }
 
-export async function getGitHubConfigForUser(userId: string): Promise<GitHubConfig | null> {
-  const db = await getGitHubConfigFromDb(userId);
+export async function getGitLabCodeConfigForUser(userId: string): Promise<GitLabCodeConfig | null> {
+  const db = await getGitLabCodeConfigFromDb(userId);
   if (db) return db;
-  return getGitHubConfigFromEnv();
+  return getGitLabCodeConfigFromEnv();
 }
 
-export async function saveGitHubConfig(
+export async function saveGitLabCodeConfig(
   userId: string,
-  data: { token: string; defaultOwner?: string }
+  data: {
+    baseUrl: string;
+    token: string;
+    defaultGroup?: string;
+    insecureSsl?: boolean;
+  }
 ) {
   await query(
-    `INSERT INTO github_config (user_id, token_encrypted, default_owner)
-     VALUES ($1, $2, $3)
+    `INSERT INTO gitlab_code_config (user_id, base_url, token_encrypted, default_group, insecure_ssl)
+     VALUES ($1, $2, $3, $4, $5)
      ON CONFLICT (user_id) DO UPDATE SET
+       base_url = EXCLUDED.base_url,
        token_encrypted = EXCLUDED.token_encrypted,
-       default_owner = EXCLUDED.default_owner,
+       default_group = EXCLUDED.default_group,
+       insecure_ssl = EXCLUDED.insecure_ssl,
        updated_at = NOW()`,
-    [userId, data.token, data.defaultOwner || null]
+    [
+      userId,
+      data.baseUrl.replace(/\/$/, ''),
+      data.token,
+      data.defaultGroup || null,
+      data.insecureSsl === true,
+    ]
   );
 }
 
-export function createGitHubClient(token: string): AxiosInstance {
+export function encodeProjectPath(projectPath: string): string {
+  return encodeURIComponent(projectPath);
+}
+
+export function createGitLabClient(cfg: GitLabCodeConfig): AxiosInstance {
   return axios.create({
-    baseURL: GITHUB_API,
+    baseURL: `${cfg.baseUrl.replace(/\/$/, '')}/api/v4`,
     headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
+      'PRIVATE-TOKEN': cfg.token,
+      Authorization: `Bearer ${cfg.token}`,
     },
     timeout: 60000,
+    ...(cfg.insecureSsl
+      ? { httpsAgent: new https.Agent({ rejectUnauthorized: false }) }
+      : {}),
   });
 }
 
-export interface GitHubConnectionTestResult {
+export interface GitLabConnectionTestResult {
   ok: boolean;
   authorization: 'success' | 'failed' | 'not_configured';
   httpStatus?: number;
   message: string;
   details: {
-    login?: string;
+    baseUrl?: string;
+    username?: string;
     name?: string;
-    defaultOwner?: string;
-    repoCount?: number;
+    defaultGroup?: string;
+    projectCount?: number;
+    insecureSsl?: boolean;
     testedAt: string;
   };
 }
 
-export async function testGitHubConnection(
+export async function testGitLabCodeConnection(
   userId: string,
-  overrides?: Partial<GitHubConfig>
-): Promise<GitHubConnectionTestResult> {
-  const cfg = overrides?.token
-    ? { token: overrides.token, defaultOwner: overrides.defaultOwner }
-    : await getGitHubConfigForUser(userId);
+  overrides?: Partial<GitLabCodeConfig> & { token?: string }
+): Promise<GitLabConnectionTestResult> {
+  const saved = await getGitLabCodeConfigForUser(userId);
+  const cfg: GitLabCodeConfig | null = saved
+    ? {
+        ...saved,
+        ...overrides,
+        baseUrl: overrides?.baseUrl?.replace(/\/$/, '') || saved.baseUrl,
+        token: overrides?.token?.trim() ? overrides.token : saved.token,
+      }
+    : overrides?.baseUrl && overrides?.token
+      ? {
+          baseUrl: overrides.baseUrl.replace(/\/$/, ''),
+          token: overrides.token,
+          defaultGroup: overrides.defaultGroup,
+          insecureSsl: overrides.insecureSsl === true,
+        }
+      : null;
 
   const testedAt = new Date().toISOString();
 
-  if (!cfg?.token) {
+  if (!cfg?.baseUrl || !cfg.token) {
     return {
       ok: false,
       authorization: 'not_configured',
-      message: 'GitHub is not configured. Add a Personal Access Token.',
+      message: 'GitLab is not configured. Set GITLAB_URL and a Personal Access Token (api scope).',
       details: { testedAt },
     };
   }
 
   try {
-    const client = createGitHubClient(cfg.token);
-    const { data: user } = await client.get<{ login: string; name: string | null }>('/user');
+    const client = createGitLabClient(cfg);
+    const { data: user, status } = await client.get<{ username: string; name: string }>('/user');
 
-    let repoCount: number | undefined;
+    let projectCount: number | undefined;
     try {
-      const repos = await listAccessibleRepos(cfg.token, cfg.defaultOwner);
-      repoCount = repos.length;
+      const projects = await listAccessibleProjects(cfg);
+      projectCount = projects.length;
     } catch {
       /* optional */
     }
@@ -135,221 +178,184 @@ export async function testGitHubConnection(
     return {
       ok: true,
       authorization: 'success',
-      message: `Connected as ${user.login}${user.name ? ` (${user.name})` : ''}`,
+      httpStatus: status,
+      message: `Connected to GitLab as ${user.name || user.username} (${cfg.baseUrl})`,
       details: {
-        login: user.login,
-        name: user.name || undefined,
-        defaultOwner: cfg.defaultOwner,
-        repoCount,
+        baseUrl: cfg.baseUrl,
+        username: user.username,
+        name: user.name,
+        defaultGroup: cfg.defaultGroup,
+        projectCount,
+        insecureSsl: cfg.insecureSsl,
         testedAt,
       },
     };
   } catch (err) {
     const status = isAxiosError(err) ? err.response?.status : undefined;
     const detail = isAxiosError(err)
-      ? String(err.response?.data?.message || err.message)
+      ? String((err.response?.data as { message?: string })?.message || err.message)
       : err instanceof Error
         ? err.message
         : 'Unknown error';
+
+    let message =
+      status === 401
+        ? `Authorization failed (HTTP 401): Invalid GitLab token. Use a PAT with api scope.`
+        : `Connection failed: ${detail}`;
+
+    if (/certificate|UNABLE_TO_VERIFY/i.test(detail)) {
+      message = `TLS error connecting to ${cfg.baseUrl}. Enable "Allow self-signed certificate" for on-prem GitLab.`;
+    } else if (/ECONNREFUSED|ENOTFOUND|ETIMEDOUT/i.test(detail)) {
+      message = `Cannot reach GitLab at ${cfg.baseUrl}. Connect to VPN and verify the URL.`;
+    }
 
     return {
       ok: false,
       authorization: 'failed',
       httpStatus: status,
-      message: status === 401 ? `Authorization failed (HTTP 401): Invalid token.` : `Connection failed: ${detail}`,
-      details: { testedAt },
+      message,
+      details: { baseUrl: cfg.baseUrl, testedAt },
     };
   }
 }
 
-export interface GitHubRepo {
+export interface GitLabProject {
   fullName: string;
-  owner: string;
+  projectPath: string;
   name: string;
   defaultBranch: string;
   private: boolean;
   description: string | null;
+  webUrl: string | null;
 }
 
-export async function listAccessibleRepos(token: string, owner?: string): Promise<GitHubRepo[]> {
-  const client = createGitHubClient(token);
-  const repos: GitHubRepo[] = [];
+export async function listAccessibleProjects(cfg: GitLabCodeConfig): Promise<GitLabProject[]> {
+  const client = createGitLabClient(cfg);
+  const projects: GitLabProject[] = [];
   const seen = new Set<string>();
 
-  const addRepos = (
+  const addProjects = (
     data: {
-      full_name: string;
+      path_with_namespace: string;
       name: string;
-      default_branch: string;
-      private: boolean;
+      default_branch?: string;
+      visibility: string;
       description: string | null;
-      owner: { login: string };
+      web_url: string;
     }[]
   ) => {
-    for (const r of data) {
-      if (seen.has(r.full_name)) continue;
-      seen.add(r.full_name);
-      repos.push({
-        fullName: r.full_name,
-        owner: r.owner.login,
-        name: r.name,
-        defaultBranch: r.default_branch || 'main',
-        private: r.private,
-        description: r.description,
+    for (const p of data) {
+      if (seen.has(p.path_with_namespace)) continue;
+      seen.add(p.path_with_namespace);
+      projects.push({
+        fullName: p.path_with_namespace,
+        projectPath: p.path_with_namespace,
+        name: p.name,
+        defaultBranch: p.default_branch || 'main',
+        private: p.visibility === 'private' || p.visibility === 'internal',
+        description: p.description,
+        webUrl: p.web_url,
       });
     }
   };
 
-  const fetchPaged = async (path: string, params: Record<string, string | number>) => {
+  const fetchPaged = async (path: string, params: Record<string, string | number | boolean>) => {
     let page = 1;
     while (page <= 5) {
       const { data } = await client.get<
         {
-          full_name: string;
+          path_with_namespace: string;
           name: string;
-          default_branch: string;
-          private: boolean;
+          default_branch?: string;
+          visibility: string;
           description: string | null;
-          owner: { login: string };
+          web_url: string;
         }[]
       >(path, { params: { ...params, per_page: 100, page } });
       if (!data.length) break;
-      addRepos(data);
+      addProjects(data);
       if (data.length < 100) break;
       page++;
     }
   };
 
-  const normalizedOwner = normalizeDefaultOwner(owner);
+  const normalizedGroup = normalizeGroup(cfg.defaultGroup);
 
-  if (normalizedOwner) {
+  if (normalizedGroup) {
+    const groupId = encodeProjectPath(normalizedGroup);
     try {
-      await fetchPaged(`/orgs/${normalizedOwner}/repos`, { sort: 'updated' });
+      await fetchPaged(`/groups/${groupId}/projects`, { include_subgroups: true, order_by: 'last_activity_at' });
     } catch (err) {
       if (!isAxiosError(err) || err.response?.status !== 404) throw err;
     }
-    if (repos.length === 0) {
-      try {
-        await fetchPaged(`/users/${normalizedOwner}/repos`, { sort: 'updated', type: 'all' });
-      } catch (err) {
-        if (!isAxiosError(err) || err.response?.status !== 404) throw err;
-      }
-    }
   }
 
-  await fetchPaged('/user/repos', {
-    sort: 'updated',
-    affiliation: 'owner,collaborator,organization_member',
+  await fetchPaged('/projects', {
+    membership: true,
+    order_by: 'last_activity_at',
+    simple: true,
   });
 
-  return repos;
-}
-
-interface TreeEntry {
-  path: string;
-  type: string;
-  size?: number;
-}
-
-function shouldIncludeFile(path: string, size?: number): boolean {
-  if (size !== undefined && size > MAX_FILE_SIZE) return false;
-
-  const lower = path.toLowerCase();
-  const parts = lower.split('/');
-  if (parts.some((p) => SKIP_DIRS.has(p))) return false;
-
-  const basename = parts[parts.length - 1];
-  if (SCAN_FILENAMES.has(basename)) return basename === 'package.json';
-  if (basename === 'dockerfile') return true;
-
-  const dot = lower.lastIndexOf('.');
-  if (dot === -1) return false;
-  return SCAN_EXTENSIONS.has(lower.slice(dot));
-}
-
-function priorityScore(path: string): number {
-  const lower = path.toLowerCase();
-  for (let i = 0; i < PRIORITY_SEGMENTS.length; i++) {
-    if (lower.includes(PRIORITY_SEGMENTS[i])) return PRIORITY_SEGMENTS.length - i;
-  }
-  return 0;
-}
-
-export function selectFilesForScan(entries: TreeEntry[]): string[] {
-  const candidates = entries
-    .filter((e) => e.type === 'blob' && shouldIncludeFile(e.path, e.size))
-    .sort((a, b) => priorityScore(b.path) - priorityScore(a.path));
-
-  const selected: string[] = [];
-  const hasPackageJson = candidates.some((c) => c.path.toLowerCase() === 'package.json');
-
-  for (const c of candidates) {
-    if (c.path.toLowerCase() === 'package.json') continue;
-    if (selected.length >= MAX_FILES_PER_SCAN) break;
-    selected.push(c.path);
-  }
-
-  if (hasPackageJson && selected.length < MAX_FILES_PER_SCAN) {
-    selected.unshift('package.json');
-  }
-
-  return selected.slice(0, MAX_FILES_PER_SCAN);
-}
-
-function detectLanguage(path: string): string {
-  const lower = path.toLowerCase();
-  if (lower.endsWith('.ts') || lower.endsWith('.tsx')) return 'typescript';
-  if (lower.endsWith('.js') || lower.endsWith('.jsx')) return 'javascript';
-  if (lower.endsWith('.py')) return 'python';
-  if (lower.endsWith('.go')) return 'go';
-  if (lower.endsWith('.java')) return 'java';
-  if (lower.endsWith('.sql')) return 'sql';
-  if (lower === 'dockerfile') return 'dockerfile';
-  if (lower.endsWith('docker-compose.yml')) return 'yaml';
-  if (lower.endsWith('.env.example')) return 'env';
-  if (lower.endsWith('package.json')) return 'json';
-  return 'text';
+  return projects;
 }
 
 export async function fetchRepoTree(
   client: AxiosInstance,
-  owner: string,
-  repo: string,
+  projectPath: string,
   branch: string
 ): Promise<{ sha: string; entries: TreeEntry[] }> {
-  const { data: refData } = await client.get<{ object: { sha: string } }>(
-    `/repos/${owner}/${repo}/git/ref/heads/${encodeURIComponent(branch)}`
-  );
-  const commitSha = refData.object.sha;
+  const projectId = encodeProjectPath(projectPath);
+  const entries: TreeEntry[] = [];
+  let page = 1;
 
-  const { data: treeData } = await client.get<{ sha: string; tree: TreeEntry[] }>(
-    `/repos/${owner}/${repo}/git/trees/${commitSha}`,
-    { params: { recursive: '1' } }
+  while (page <= 15) {
+    const { data } = await client.get<{ path: string; type: string }[]>(
+      `/projects/${projectId}/repository/tree`,
+      { params: { ref: branch, recursive: true, per_page: 100, page } }
+    );
+    if (!data.length) break;
+    for (const item of data) {
+      entries.push({
+        path: item.path,
+        type: item.type === 'tree' ? 'tree' : 'blob',
+      });
+    }
+    if (data.length < 100) break;
+    page++;
+  }
+
+  const { data: commits } = await client.get<{ id: string }[]>(
+    `/projects/${projectId}/repository/commits`,
+    { params: { ref_name: branch, per_page: 1 } }
   );
 
-  return { sha: commitSha, entries: treeData.tree };
+  return { sha: commits[0]?.id || '', entries };
 }
 
 export async function fetchFileContents(
   client: AxiosInstance,
-  owner: string,
-  repo: string,
+  projectPath: string,
   path: string,
   branch: string
 ): Promise<string> {
-  const { data } = await client.get<{ content: string; encoding: string; size: number }>(
-    `/repos/${owner}/${repo}/contents/${path.split('/').map(encodeURIComponent).join('/')}`,
-    { params: { ref: branch } }
+  const projectId = encodeProjectPath(projectPath);
+  const filePath = encodeURIComponent(path);
+
+  const { data, headers } = await client.get<string>(
+    `/projects/${projectId}/repository/files/${filePath}/raw`,
+    {
+      params: { ref: branch },
+      responseType: 'text',
+      transformResponse: [(r) => r],
+    }
   );
 
-  if (data.size > MAX_FILE_SIZE) {
+  const content = typeof data === 'string' ? data : String(data);
+  const contentLength = parseInt(String(headers['content-length'] || content.length), 10);
+  if (contentLength > MAX_FILE_SIZE) {
     throw new Error(`File ${path} exceeds size limit`);
   }
-
-  if (data.encoding === 'base64') {
-    return Buffer.from(data.content.replace(/\n/g, ''), 'base64').toString('utf-8');
-  }
-  return data.content;
+  return content;
 }
 
 function buildSeveritySummary(findings: CodeReviewFinding[]): Record<string, number> {
@@ -422,13 +428,13 @@ function mapScanRow(row: {
 
 export async function runSecurityScan(
   userId: string,
-  params: { owner: string; repo: string; branch?: string }
+  params: { projectPath: string; branch?: string }
 ): Promise<SecurityScanRun> {
-  const cfg = await getGitHubConfigForUser(userId);
-  if (!cfg) throw new Error('GitHub is not configured');
+  const cfg = await getGitLabCodeConfigForUser(userId);
+  if (!cfg) throw new Error('GitLab is not configured');
 
   const branch = params.branch || 'main';
-  const repoFullName = `${params.owner}/${params.repo}`;
+  const repoFullName = params.projectPath;
 
   const { rows: scanRows } = await query<{ id: string }>(
     `INSERT INTO security_scan_runs (user_id, repo_full_name, branch, status)
@@ -439,22 +445,22 @@ export async function runSecurityScan(
   const scanId = scanRows[0].id;
 
   await query(
-    `UPDATE github_config SET scan_status = 'running', updated_at = NOW() WHERE user_id = $1`,
+    `UPDATE gitlab_code_config SET scan_status = 'running', updated_at = NOW() WHERE user_id = $1`,
     [userId]
   );
 
   try {
-    const client = createGitHubClient(cfg.token);
-    const { sha, entries } = await fetchRepoTree(client, params.owner, params.repo, branch);
+    const client = createGitLabClient(cfg);
+    const { sha, entries } = await fetchRepoTree(client, params.projectPath, branch);
     const paths = selectFilesForScan(entries);
 
     const files: { path: string; language: string; content: string }[] = [];
     for (const path of paths) {
       try {
-        const content = await fetchFileContents(client, params.owner, params.repo, path, branch);
+        const content = await fetchFileContents(client, params.projectPath, path, branch);
         files.push({ path, language: detectLanguage(path), content });
       } catch (err) {
-        console.warn(`[github-scan] skip ${path}:`, err instanceof Error ? err.message : err);
+        console.warn(`[gitlab-scan] skip ${path}:`, err instanceof Error ? err.message : err);
       }
     }
 
@@ -466,7 +472,7 @@ export async function runSecurityScan(
         branch,
       });
     } else {
-      reviewResult.summary = 'No scannable source files found in this repository branch.';
+      reviewResult.summary = 'No scannable source files found in this project branch.';
     }
 
     const severitySummary = buildSeveritySummary(reviewResult.findings);
@@ -520,7 +526,7 @@ export async function runSecurityScan(
     );
 
     await query(
-      `UPDATE github_config SET scan_status = 'idle', last_scan_at = NOW(), updated_at = NOW() WHERE user_id = $1`,
+      `UPDATE gitlab_code_config SET scan_status = 'idle', last_scan_at = NOW(), updated_at = NOW() WHERE user_id = $1`,
       [userId]
     );
 
@@ -532,7 +538,7 @@ export async function runSecurityScan(
       [scanId, message]
     );
     await query(
-      `UPDATE github_config SET scan_status = 'idle', updated_at = NOW() WHERE user_id = $1`,
+      `UPDATE gitlab_code_config SET scan_status = 'idle', updated_at = NOW() WHERE user_id = $1`,
       [userId]
     );
     throw err;
@@ -612,7 +618,7 @@ export async function getSecurityScan(
     code_snippet: string | null;
     confidence: string | null;
   }>(
-    'SELECT * FROM security_findings WHERE scan_run_id = $1 ORDER BY CASE severity WHEN \'critical\' THEN 1 WHEN \'high\' THEN 2 WHEN \'medium\' THEN 3 WHEN \'low\' THEN 4 ELSE 5 END, file_path',
+    `SELECT * FROM security_findings WHERE scan_run_id = $1 ORDER BY CASE severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 WHEN 'low' THEN 4 ELSE 5 END, file_path`,
     [scanId]
   );
 
@@ -643,12 +649,8 @@ export async function listScanFindings(
   if (!scan) return [];
 
   let findings = scan.findings;
-  if (filters.severity) {
-    findings = findings.filter((f) => f.severity === filters.severity);
-  }
-  if (filters.category) {
-    findings = findings.filter((f) => f.category === filters.category);
-  }
+  if (filters.severity) findings = findings.filter((f) => f.severity === filters.severity);
+  if (filters.category) findings = findings.filter((f) => f.category === filters.category);
   return findings;
 }
 
@@ -661,7 +663,7 @@ export async function getSecurityDashboardStats(userId: string) {
   }>(
     `SELECT
        (SELECT COUNT(*)::text FROM security_scan_runs WHERE user_id = $1) AS total_scans,
-       (SELECT last_scan_at FROM github_config WHERE user_id = $1) AS last_scan_at,
+       (SELECT last_scan_at FROM gitlab_code_config WHERE user_id = $1) AS last_scan_at,
        (SELECT COUNT(*)::text FROM security_findings sf
         JOIN security_scan_runs sr ON sr.id = sf.scan_run_id
         WHERE sr.user_id = $1 AND sf.severity = 'critical') AS critical_count,
@@ -679,4 +681,3 @@ export async function getSecurityDashboardStats(userId: string) {
     highCount: parseInt(r?.high_count || '0', 10),
   };
 }
-
