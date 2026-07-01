@@ -9,6 +9,8 @@ import { TicketDetailPage } from '@/pages/TicketDetailPage';
 import { ChatPage } from '@/pages/ChatPage';
 import { SimilarExplorerPage } from '@/pages/SimilarExplorerPage';
 import { AdminSyncPage } from '@/pages/AdminSyncPage';
+import { SecurityDashboardPage } from '@/pages/SecurityDashboardPage';
+import { SecurityScanDetailPage } from '@/pages/SecurityScanDetailPage';
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 30000, retry: 1 } },
@@ -47,6 +49,8 @@ function AppRoutes() {
         <Route path="tickets/:id" element={<TicketDetailPage />} />
         <Route path="chat" element={<ChatPage />} />
         <Route path="similar" element={<SimilarExplorerPage />} />
+        <Route path="security" element={<SecurityDashboardPage />} />
+        <Route path="security/scans/:id" element={<SecurityScanDetailPage />} />
         <Route path="admin" element={<AdminSyncPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />

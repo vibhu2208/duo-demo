@@ -5,6 +5,7 @@ import { config, getAiSetupStatus } from './config.js';
 import { getActiveProviderLabel } from './lib/llm/index.js';
 import { getStoreSize } from './lib/vector-store.js';
 import { embedTicket, analyzeTicket, generateRecommendation, ragChat } from './services/rag.service.js';
+import { reviewCode } from './services/security.service.js';
 import { searchSimilar } from './lib/chroma.js';
 import { buildTicketDocument } from './lib/text.js';
 import { upsertTicketEmbedding } from './lib/chroma.js';
@@ -126,6 +127,32 @@ app.post('/chat', async (req, res) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Chat failed';
     console.error('[chat]', message);
+    res.status(500).json({ error: message });
+  }
+});
+
+const reviewCodeSchema = z.object({
+  files: z.array(
+    z.object({
+      path: z.string(),
+      language: z.string(),
+      content: z.string(),
+    })
+  ),
+  repo: z.string(),
+  branch: z.string(),
+});
+
+app.post('/security/review-code', async (req, res) => {
+  const parsed = reviewCodeSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+
+  try {
+    const result = await reviewCode(parsed.data);
+    res.json(result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Security review failed';
+    console.error('[security/review-code]', message);
     res.status(500).json({ error: message });
   }
 });

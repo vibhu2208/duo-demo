@@ -182,6 +182,7 @@ export interface JiraConnectionTestResult {
     syncFilter?: string;
     syncFilterLabel?: string;
     matchingTicketCount?: number;
+    syncMaxTickets?: number;
     insecureSsl?: boolean;
     testedAt: string;
   };
@@ -303,6 +304,7 @@ export async function testJiraConnection(
         params: { jql, startAt: 0, maxResults: 0 },
       });
       details.matchingTicketCount = searchResult.total ?? 0;
+      details.syncMaxTickets = config.jira.syncMaxTickets;
     } catch {
       // search may fail even when auth works — reported separately if needed
     }
@@ -314,7 +316,9 @@ export async function testJiraConnection(
       message += ` Project "${cfg.projectKey}" (${details.projectName}) is accessible.`;
     }
     if (details.matchingTicketCount !== undefined) {
-      message += ` ${details.matchingTicketCount} ticket(s) match your sync filter.`;
+      const cap = details.syncMaxTickets ?? config.jira.syncMaxTickets;
+      const pull = Math.min(cap, details.matchingTicketCount);
+      message += ` ${pull} of ${details.matchingTicketCount} matching ticket(s) will be synced (latest ${cap} max).`;
     }
 
     return {
@@ -405,14 +409,15 @@ async function fetchResolvedIssues(
   deploymentType: JiraDeploymentType,
   projectKey: string,
   syncFilter: JiraSyncFilter,
-  startAt = 0
+  startAt = 0,
+  maxResults = 50
 ) {
   const jql = buildSyncIssuesJql(projectKey, deploymentType, syncFilter);
 
   const params = {
     jql,
     startAt,
-    maxResults: 50,
+    maxResults,
     fields:
       'summary,description,status,priority,labels,assignee,reporter,created,resolution,resolutiondate,comment,issuetype',
   };
@@ -426,16 +431,26 @@ async function fetchAllIssues(
   client: AxiosInstance,
   deploymentType: JiraDeploymentType,
   projectKey: string,
-  syncFilter: JiraSyncFilter
+  syncFilter: JiraSyncFilter,
+  maxTickets = config.jira.syncMaxTickets
 ) {
   const issues: Record<string, unknown>[] = [];
   let startAt = 0;
   let total = 1;
+  const limit = Math.max(1, maxTickets);
 
-  while (startAt < total) {
-    const data = await fetchResolvedIssues(client, deploymentType, projectKey, syncFilter, startAt);
+  while (startAt < total && issues.length < limit) {
+    const remaining = limit - issues.length;
+    const data = await fetchResolvedIssues(
+      client,
+      deploymentType,
+      projectKey,
+      syncFilter,
+      startAt,
+      Math.min(50, remaining)
+    );
     const batch = (data.issues || []) as Record<string, unknown>[];
-    issues.push(...batch);
+    issues.push(...batch.slice(0, remaining));
     total = data.total as number;
     startAt += batch.length;
     if (batch.length === 0) break;
@@ -576,7 +591,7 @@ export async function syncJiraTickets(userId: string): Promise<{
             jira_key, jira_id, title, description, status, priority, labels,
             assignee, reporter, issue_type, resolution, resolution_notes, final_fix,
             resolution_time_hours, created_at_jira, resolved_at_jira, raw_payload
-          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
           RETURNING id`,
           [
             parsed.jiraKey,

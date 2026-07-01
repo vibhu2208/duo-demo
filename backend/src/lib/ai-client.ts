@@ -45,6 +45,24 @@ export interface ChatResult {
   sessionId?: string;
 }
 
+export interface CodeReviewFinding {
+  filePath: string;
+  lineStart?: number;
+  lineEnd?: number;
+  severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
+  category: string;
+  title: string;
+  description: string;
+  recommendation: string;
+  codeSnippet?: string;
+  confidence?: number;
+}
+
+export interface CodeReviewResult {
+  findings: CodeReviewFinding[];
+  summary: string;
+}
+
 type EmbedPayload = {
   ticketId: string;
   jiraKey: string;
@@ -80,6 +98,11 @@ export const aiClient: {
     history?: { role: string; content: string }[];
   }) => Promise<ChatResult>;
   bulkEmbed: (tickets: EmbedPayload[]) => Promise<{ indexed: number; failed: number }>;
+  reviewCode: (payload: {
+    files: { path: string; language: string; content: string }[];
+    repo: string;
+    branch: string;
+  }) => Promise<CodeReviewResult>;
 } = {
   async health() {
     const { data } = await client.get('/health');
@@ -145,5 +168,20 @@ export const aiClient: {
   async bulkEmbed(tickets: EmbedPayload[]) {
     const { data } = await client.post<{ indexed: number; failed: number }>('/embed/bulk', { tickets });
     return data;
+  },
+
+  async reviewCode(payload: {
+    files: { path: string; language: string; content: string }[];
+    repo: string;
+    branch: string;
+  }) {
+    try {
+      return await withRetry(
+        () => client.post<CodeReviewResult>('/security/review-code', payload).then((r) => r.data),
+        { attempts: 2, delayMs: 2000 }
+      );
+    } catch (err: unknown) {
+      throw new Error(formatAiServiceError(err));
+    }
   },
 };

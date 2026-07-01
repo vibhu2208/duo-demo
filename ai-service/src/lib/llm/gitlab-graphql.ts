@@ -47,7 +47,11 @@ export async function getCurrentUserGid(): Promise<string> {
 /**
  * GitLab.com: GraphQL aiAction + poll by requestId only (never stale global messages).
  */
-export async function gitlabChatViaGraphql(fullPrompt: string, userQuestion: string): Promise<string> {
+export async function gitlabChatViaGraphql(
+  fullPrompt: string,
+  userQuestion: string,
+  opts?: { maxAttempts?: number; securityMode?: boolean }
+): Promise<string> {
   const userGid = await getCurrentUserGid();
   const clientSubscriptionId = randomUUID();
 
@@ -89,20 +93,26 @@ export async function gitlabChatViaGraphql(fullPrompt: string, userQuestion: str
     throw new Error('GitLab Duo did not return a requestId');
   }
 
-  const maxAttempts = 25;
+  const maxAttempts = opts?.maxAttempts ?? 40;
   const delayMs = 1500;
 
   for (let i = 0; i < maxAttempts; i++) {
     await sleep(delayMs);
 
     const answer = await fetchMessageByRequestId(requestId, action.threadId);
-    if (answer && isPlausibleReply(answer, userQuestion)) {
+    if (
+      answer &&
+      isPlausibleReply(answer, userQuestion, {
+        securityMode: opts?.securityMode,
+        pollAttempt: i,
+      })
+    ) {
       return answer;
     }
   }
 
   throw new Error(
-    'GitLab Duo did not return a response in time. Try a more specific question about a Jira ticket.'
+    'GitLab Duo did not return a response in time. The request may be too large — retry with a smaller repo or fewer files.'
   );
 }
 
@@ -166,15 +176,34 @@ function isAssistantRole(role: string): boolean {
 }
 
 /** Reject stale/wrong cached Duo messages (e.g. old JSON analysis for a "Hey") */
-function isPlausibleReply(content: string, userQuestion: string): boolean {
+function isPlausibleReply(
+  content: string,
+  userQuestion: string,
+  opts?: { securityMode?: boolean; pollAttempt?: number }
+): boolean {
   const c = content.trim();
   if (!c) return false;
 
+  if (/i'?m sorry|can'?t generate|cannot generate|unable to (assist|help|respond)/i.test(c)) {
+    return false;
+  }
+
+  const isSecurityTask =
+    opts?.securityMode === true || userQuestion.startsWith('security-review:');
+
+  if (isSecurityTask) {
+    if (c.includes('{') && c.includes('}')) return true;
+    // Duo often streams prose first — accept substantive reply after ~40s of polling
+    if ((opts?.pollAttempt ?? 0) >= 25 && c.length > 60) return true;
+    return false;
+  }
+
   const isJsonAnalysis = c.startsWith('{') && c.includes('probableRootCause');
+  const isSecurityJson = c.includes('"findings"') || (c.startsWith('{') && c.includes('findings'));
   const shortGreeting = /^(hi|hey|hello|ok|yes|no)[\s!.?]*$/i.test(userQuestion.trim());
 
   if (shortGreeting && isJsonAnalysis) return false;
-  if (shortGreeting && c.length > 800) return false;
+  if (shortGreeting && c.length > 800 && !isSecurityJson) return false;
 
   return true;
 }

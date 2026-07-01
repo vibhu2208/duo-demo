@@ -24,6 +24,30 @@ api.interceptors.response.use(
 
 export default api;
 
+export function getApiErrorMessage(err: unknown, fallback: string): string {
+  const ax = err as {
+    response?: { status?: number; data?: { error?: unknown; message?: string } };
+    message?: string;
+  };
+  if (ax.response?.status === 404) {
+    return 'Backend API not found (404). Ensure the backend is running and BACKEND_PORT in .env matches — then restart the frontend dev server.';
+  }
+  if (ax.response?.status === 403) {
+    return 'Admin access required to save GitHub configuration.';
+  }
+  const data = ax.response?.data;
+  if (typeof data?.error === 'string') return data.error;
+  if (data?.error && typeof data.error === 'object') {
+    const fieldErrors = (data.error as { fieldErrors?: Record<string, string[]> }).fieldErrors;
+    if (fieldErrors) {
+      const first = Object.entries(fieldErrors)[0];
+      if (first) return `${first[0]}: ${first[1].join(', ')}`;
+    }
+  }
+  if (typeof data?.message === 'string') return data.message;
+  return ax.message || fallback;
+}
+
 export const authApi = {
   login: (email: string, password: string) =>
     api.post('/auth/login', { email, password }).then((r) => r.data),
@@ -108,4 +132,74 @@ export const analyticsApi = {
 
 export const aiApi = {
   status: () => api.get('/ai/status').then((r) => r.data),
+};
+
+export type GitHubConnectionTestResult = {
+  ok: boolean;
+  authorization: 'success' | 'failed' | 'not_configured';
+  httpStatus?: number;
+  message: string;
+  details: {
+    login?: string;
+    name?: string;
+    defaultOwner?: string;
+    repoCount?: number;
+    testedAt: string;
+  };
+};
+
+export type GitHubRepo = {
+  fullName: string;
+  owner: string;
+  name: string;
+  defaultBranch: string;
+  private: boolean;
+  description: string | null;
+};
+
+export type SecurityScanRun = {
+  id: string;
+  repoFullName: string;
+  branch: string;
+  commitSha: string | null;
+  status: string;
+  filesScanned: number;
+  findingsCount: number;
+  severitySummary: Record<string, number>;
+  summary: string | null;
+  errorMessage: string | null;
+  startedAt: string;
+  completedAt: string | null;
+};
+
+export type SecurityFinding = {
+  id: string;
+  filePath: string;
+  lineStart: number | null;
+  lineEnd: number | null;
+  severity: string;
+  category: string;
+  title: string;
+  description: string | null;
+  recommendation: string | null;
+  codeSnippet: string | null;
+  confidence: number | null;
+};
+
+export const githubApi = {
+  config: () => api.get('/github/config').then((r) => r.data),
+  saveConfig: (data: { token: string; defaultOwner?: string }) =>
+    api.put('/github/config', data).then((r) => r.data),
+  testConnection: (data?: { token?: string; defaultOwner?: string }) =>
+    api.post<GitHubConnectionTestResult>('/github/test-connection', data ?? {}).then((r) => r.data),
+  repos: () => api.get<{ repos: GitHubRepo[] }>('/github/repos').then((r) => r.data),
+  dashboard: () => api.get('/github/dashboard').then((r) => r.data),
+  scan: (data: { owner: string; repo: string; branch?: string }) =>
+    api.post<SecurityScanRun>('/github/scan', data, { timeout: 180000 }).then((r) => r.data),
+  scans: (params?: { limit?: number; offset?: number }) =>
+    api.get<{ scans: SecurityScanRun[]; total: number }>('/github/scans', { params }).then((r) => r.data),
+  getScan: (id: string) =>
+    api.get<SecurityScanRun & { findings: SecurityFinding[] }>(`/github/scans/${id}`).then((r) => r.data),
+  findings: (id: string, params?: { severity?: string; category?: string }) =>
+    api.get<{ findings: SecurityFinding[] }>(`/github/scans/${id}/findings`, { params }).then((r) => r.data),
 };

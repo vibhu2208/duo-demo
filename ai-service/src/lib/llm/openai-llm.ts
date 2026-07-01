@@ -28,3 +28,23 @@ export async function openaiChatCompletion(
 
   return response.choices[0]?.message?.content || 'No response generated.';
 }
+
+/** Structured JSON output (OpenAI json_object mode). */
+export async function openaiChatCompletionJson(
+  systemPrompt: string,
+  userPrompt: string
+): Promise<string> {
+  const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: userPrompt },
+  ];
+
+  const response = await openai.chat.completions.create({
+    model: config.chatModel,
+    messages,
+    temperature: 0.1,
+    response_format: { type: 'json_object' },
+  });
+
+  return response.choices[0]?.message?.content || '{}';
+}

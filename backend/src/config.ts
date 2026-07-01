@@ -25,9 +25,14 @@ export const config = {
     syncFilter: (process.env.JIRA_SYNC_FILTER || 'resolved') as 'resolved' | 'closed' | 'both',
     // Set true for internal instances with self-signed TLS certificates
     insecureSsl: process.env.JIRA_INSECURE_SSL === 'true',
+    syncMaxTickets: parseInt(process.env.JIRA_SYNC_MAX_TICKETS || '30', 10),
   },
   seed: {
     email: process.env.SEED_ADMIN_EMAIL || 'admin@example.com',
     password: process.env.SEED_ADMIN_PASSWORD || 'admin123',
+  },
+  github: {
+    token: process.env.GITHUB_TOKEN || '',
+    defaultOwner: process.env.GITHUB_DEFAULT_OWNER || '',
   },
 };

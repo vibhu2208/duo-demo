@@ -9,6 +9,7 @@ import ticketsRoutes from './routes/tickets.routes.js';
 import chatRoutes from './routes/chat.routes.js';
 import analyticsRoutes from './routes/analytics.routes.js';
 import aiRoutes from './routes/ai.routes.js';
+import githubRoutes from './routes/github.routes.js';
 
 const app = express();
 
@@ -32,6 +33,7 @@ app.use('/api/tickets', ticketsRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/ai', aiRoutes);
+app.use('/api/github', githubRoutes);
 
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error(err);

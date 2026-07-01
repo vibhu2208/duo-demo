@@ -164,3 +164,54 @@ CREATE TABLE IF NOT EXISTS analytics_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_analytics_events_type ON analytics_events(event_type);
+
+-- GitHub Code Security vertical
+
+CREATE TABLE IF NOT EXISTS github_config (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id UUID UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+  token_encrypted TEXT NOT NULL,
+  default_owner VARCHAR(255),
+  last_scan_at TIMESTAMPTZ,
+  scan_status VARCHAR(50) DEFAULT 'idle',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS security_scan_runs (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+  repo_full_name VARCHAR(500) NOT NULL,
+  branch VARCHAR(255) NOT NULL DEFAULT 'main',
+  commit_sha VARCHAR(64),
+  status VARCHAR(50) DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+  files_scanned INT DEFAULT 0,
+  findings_count INT DEFAULT 0,
+  severity_summary JSONB DEFAULT '{}',
+  summary TEXT,
+  error_message TEXT,
+  started_at TIMESTAMPTZ DEFAULT NOW(),
+  completed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_security_scan_runs_repo ON security_scan_runs(repo_full_name, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS security_findings (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  scan_run_id UUID NOT NULL REFERENCES security_scan_runs(id) ON DELETE CASCADE,
+  file_path TEXT NOT NULL,
+  line_start INT,
+  line_end INT,
+  severity VARCHAR(20) NOT NULL CHECK (severity IN ('critical', 'high', 'medium', 'low', 'info')),
+  category VARCHAR(50) NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT,
+  recommendation TEXT,
+  code_snippet TEXT,
+  confidence DECIMAL(5, 4),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_security_findings_scan ON security_findings(scan_run_id);
+CREATE INDEX IF NOT EXISTS idx_security_findings_severity ON security_findings(scan_run_id, severity);

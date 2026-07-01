@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
-import { RefreshCw, CheckCircle, AlertCircle, PlugZap, XCircle } from 'lucide-react';
-import { jiraApi, type JiraConnectionTestResult } from '@/lib/api';
+import { RefreshCw, CheckCircle, AlertCircle, PlugZap, XCircle, Shield } from 'lucide-react';
+import { jiraApi, githubApi, getApiErrorMessage, type JiraConnectionTestResult, type GitHubConnectionTestResult } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -132,6 +132,42 @@ function ConnectionTestPanel({ result }: { result: JiraConnectionTestResult }) {
   );
 }
 
+function GitHubConnectionTestPanel({ result }: { result: GitHubConnectionTestResult }) {
+  const isSuccess = result.authorization === 'success';
+
+  return (
+    <div
+      className={`mt-4 rounded-md border p-4 text-sm space-y-2 ${
+        isSuccess
+          ? 'border-green-200 bg-green-50 dark:bg-green-950 dark:border-green-900'
+          : 'border-red-200 bg-red-50 dark:bg-red-950 dark:border-red-900'
+      }`}
+    >
+      <p className={`font-medium ${isSuccess ? 'text-green-800 dark:text-green-200' : 'text-red-800 dark:text-red-200'}`}>
+        {result.message}
+      </p>
+      <dl className="grid gap-1 text-muted-foreground">
+        {result.details.login && (
+          <div className="flex gap-2">
+            <dt className="font-medium text-foreground min-w-[140px]">GitHub user</dt>
+            <dd>{result.details.login}</dd>
+          </div>
+        )}
+        {result.details.repoCount != null && (
+          <div className="flex gap-2">
+            <dt className="font-medium text-foreground min-w-[140px]">Accessible repos</dt>
+            <dd>{result.details.repoCount}</dd>
+          </div>
+        )}
+        <div className="flex gap-2">
+          <dt className="font-medium text-foreground min-w-[140px]">Tested at</dt>
+          <dd>{new Date(result.details.testedAt).toLocaleString()}</dd>
+        </div>
+      </dl>
+    </div>
+  );
+}
+
 export function AdminSyncPage() {
   const { user } = useAuth();
   const [baseUrl, setBaseUrl] = useState('https://jira.your-company.internal');
@@ -142,6 +178,9 @@ export function AdminSyncPage() {
   const [syncFilter, setSyncFilter] = useState<JiraSyncFilter>('closed');
   const [insecureSsl, setInsecureSsl] = useState(false);
   const [connectionTest, setConnectionTest] = useState<JiraConnectionTestResult | null>(null);
+  const [githubToken, setGithubToken] = useState('');
+  const [githubOwner, setGithubOwner] = useState('');
+  const [githubTestResult, setGithubTestResult] = useState<GitHubConnectionTestResult | null>(null);
 
   const { data: config, refetch } = useQuery({
     queryKey: ['jira-config'],
@@ -157,6 +196,15 @@ export function AdminSyncPage() {
     if (config.syncFilter) setSyncFilter(config.syncFilter);
     if (config.insecureSsl) setInsecureSsl(config.insecureSsl);
   }, [config]);
+
+  const { data: githubConfig, refetch: refetchGithub } = useQuery({
+    queryKey: ['github-config'],
+    queryFn: githubApi.config,
+  });
+
+  useEffect(() => {
+    if (githubConfig?.defaultOwner) setGithubOwner(githubConfig.defaultOwner);
+  }, [githubConfig]);
 
   const { data: logs } = useQuery({
     queryKey: ['sync-logs'],
@@ -198,6 +246,28 @@ export function AdminSyncPage() {
   const syncMutation = useMutation({
     mutationFn: jiraApi.sync,
     onSuccess: () => refetch(),
+  });
+
+  const saveGithubMutation = useMutation({
+    mutationFn: () =>
+      githubApi.saveConfig({
+        token: githubToken,
+        defaultOwner: githubOwner || undefined,
+      }),
+    onSuccess: () => {
+      refetchGithub();
+      setGithubToken('');
+      testGithubMutation.mutate();
+    },
+  });
+
+  const testGithubMutation = useMutation({
+    mutationFn: () =>
+      githubApi.testConnection({
+        token: githubToken || undefined,
+        defaultOwner: githubOwner || undefined,
+      }),
+    onSuccess: (data) => setGithubTestResult(data),
   });
 
   const isAdmin = user?.role === 'admin';
@@ -424,7 +494,7 @@ export function AdminSyncPage() {
             <CardHeader>
               <CardTitle className="text-lg">Sync Historical Tickets</CardTitle>
               <CardDescription>
-                Fetches tickets matching your sync filter, stores in PostgreSQL, generates embeddings
+                Fetches the latest matching tickets (max {config?.syncMaxTickets ?? 30} per run), stores in PostgreSQL, generates embeddings
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -459,6 +529,74 @@ export function AdminSyncPage() {
         </>
       ) : (
         <p className="text-muted-foreground">Admin access required to configure sync.</p>
+      )}
+
+      {isAdmin && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <Shield className="h-5 w-5 text-primary" />
+              <CardTitle>GitHub Connection</CardTitle>
+            </div>
+            <CardDescription>
+              Connect with a Personal Access Token (scopes: <code className="text-xs">repo</code> or{' '}
+              <code className="text-xs">public_repo</code>) to scan repositories for security issues.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {githubConfig?.configured && (
+              <div className="mb-4 flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
+                <CheckCircle className="h-4 w-4" />
+                GitHub configured
+                {githubConfig.source === 'environment' && ' (from environment)'}
+                {githubConfig.login && ` — ${githubConfig.login}`}
+              </div>
+            )}
+
+            <div className="space-y-4 max-w-lg">
+              <div>
+                <label className="text-sm font-medium">Personal Access Token</label>
+                <Input
+                  type="password"
+                  value={githubToken}
+                  onChange={(e) => setGithubToken(e.target.value)}
+                  placeholder={githubConfig?.configured ? '••••••••' : 'ghp_...'}
+                />
+              </div>
+              <div>
+                <label className="text-sm font-medium">Default owner (optional)</label>
+                <Input
+                  value={githubOwner}
+                  onChange={(e) => setGithubOwner(e.target.value)}
+                  placeholder="org-or-username"
+                />
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  onClick={() => saveGithubMutation.mutate()}
+                  disabled={saveGithubMutation.isPending || !githubToken}
+                >
+                  Save GitHub Config
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => testGithubMutation.mutate()}
+                  disabled={testGithubMutation.isPending}
+                >
+                  <PlugZap className="h-4 w-4 mr-2" />
+                  Test Connection
+                </Button>
+              </div>
+              {saveGithubMutation.isError && (
+                <p className="text-sm text-red-600">
+                  {getApiErrorMessage(saveGithubMutation.error, 'Failed to save GitHub configuration')}
+                </p>
+              )}
+            </div>
+
+            {githubTestResult && <GitHubConnectionTestPanel result={githubTestResult} />}
+          </CardContent>
+        </Card>
       )}
 
       <Card>

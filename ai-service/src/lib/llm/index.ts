@@ -1,6 +1,6 @@
 import { config } from '../../config.js';
-import { gitlabChatCompletion } from './gitlab-duo.js';
-import { openaiChatCompletion } from './openai-llm.js';
+import { gitlabChatCompletion, gitlabSecurityCompletion, type GitlabChatOptions } from './gitlab-duo.js';
+import { openaiChatCompletion, openaiChatCompletionJson } from './openai-llm.js';
 import { mockChatCompletion } from './mock-llm.js';
 
 export type ChatMessage = { role: 'user' | 'assistant' | 'system'; content: string };
@@ -45,6 +45,49 @@ export async function chatCompletion(
   }
 
   throw new Error(`Unknown AI_PROVIDER: ${config.provider}`);
+}
+
+/** GitLab Duo code security — REST-only, returns null on failure (no GraphQL poll). */
+export async function duoSecurityCompletion(
+  systemPrompt: string,
+  filePath: string,
+  codeSnippet: string
+): Promise<string | null> {
+  if (config.provider !== 'gitlab') return null;
+  await assertProviderReady();
+  return gitlabSecurityCompletion(systemPrompt, filePath, codeSnippet);
+}
+
+/** GitLab Duo for non-chat tasks (e.g. code security review) — no Jira-specific framing. */
+export async function duoTaskCompletion(
+  systemPrompt: string,
+  userPrompt: string,
+  taskTag: string,
+  options: Omit<GitlabChatOptions, 'userLabel' | 'graphqlUserTag'> = {}
+): Promise<string> {
+  if (config.provider !== 'gitlab') {
+    return chatCompletion(systemPrompt, userPrompt);
+  }
+  await assertProviderReady();
+  return gitlabChatCompletion(systemPrompt, userPrompt, [], [], {
+    userLabel: 'Task',
+    contextLabel: 'Reference context',
+    graphqlUserTag: taskTag,
+    graphqlMaxAttempts: 50,
+    ...options,
+  });
+}
+
+/** Prefer JSON-shaped responses (OpenAI json_object mode; others use standard chat). */
+export async function chatCompletionJson(systemPrompt: string, userPrompt: string): Promise<string> {
+  if (config.provider === 'mock') {
+    return mockChatCompletion(systemPrompt, userPrompt);
+  }
+  if (config.provider === 'openai') {
+    await assertProviderReady();
+    return openaiChatCompletionJson(systemPrompt, userPrompt);
+  }
+  return chatCompletion(systemPrompt, userPrompt);
 }
 
 export async function getActiveProviderLabel(): Promise<string> {

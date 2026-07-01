@@ -5,6 +5,7 @@ import {
   MessageSquare,
   GitCompare,
   Settings,
+  Shield,
   LogOut,
   Moon,
   Sun,
@@ -26,6 +27,7 @@ const nav = [
   { to: '/tickets', icon: Search, label: 'Ticket Search' },
   { to: '/similar', icon: GitCompare, label: 'Similar Explorer' },
   { to: '/chat', icon: MessageSquare, label: 'Duo Chat' },
+  { to: '/security', icon: Shield, label: 'Code Security' },
   { to: '/admin', icon: Settings, label: 'Sync Settings' },
 ] as const;
 

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { authMiddleware, adminOnly, AuthRequest } from '../middleware/auth.js';
 import { syncJiraTickets, saveJiraConfig, getJiraConfigForUser, getJiraConfigFromEnv, testJiraConnection } from '../services/jira.service.js';
+import { config as appConfig } from '../config.js';
 import { query } from '../db/pool.js';
 
 const router = Router();
@@ -76,6 +77,7 @@ router.get('/config', async (req: AuthRequest, res) => {
     baseUrl: userCfg?.baseUrl,
     syncFilter: userCfg?.syncFilter || 'resolved',
     syncFilterLabel: syncFilterLabels[userCfg?.syncFilter || 'resolved'],
+    syncMaxTickets: appConfig.jira.syncMaxTickets,
     insecureSsl: userCfg?.insecureSsl === true,
     username: userCfg?.username,
     lastSyncAt: lastSync.rows[0]?.last_sync_at,
@@ -96,7 +98,7 @@ router.put('/config', adminOnly, async (req: AuthRequest, res) => {
     data = { ...data, apiToken: existing.apiToken };
   }
 
-  await saveJiraConfig(req.user!.id, data);
+  await saveJiraConfig(req.user!.id, { ...data, apiToken: data.apiToken! });
   res.json({ success: true });
 });
 

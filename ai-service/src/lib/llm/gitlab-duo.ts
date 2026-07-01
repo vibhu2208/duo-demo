@@ -2,6 +2,7 @@ import axios, { AxiosError } from 'axios';
 import { config, getGitlabSetupStatusAsync } from '../../config.js';
 import { formatNetworkError, withRetry } from '../network-utils.js';
 import { gitlabChatViaGraphql } from './gitlab-graphql.js';
+import { parseJsonFromLlm } from '../json-utils.js';
 import type { ChatContextItem, ChatMessage } from './index.js';
 
 function gitlabHeaders() {
@@ -68,8 +69,12 @@ function buildFullPrompt(
   systemPrompt: string,
   userPrompt: string,
   history: ChatMessage[],
-  additionalContext: ChatContextItem[]
+  additionalContext: ChatContextItem[],
+  opts?: { userLabel?: string; contextLabel?: string }
 ): string {
+  const userLabel = opts?.userLabel || 'User question';
+  const contextLabel = opts?.contextLabel || 'Additional context';
+
   const contextBlock = additionalContext
     .map((c, i) => `[Context ${i + 1} — ${c.id}]\n${c.content}`)
     .join('\n\n');
@@ -81,11 +86,21 @@ function buildFullPrompt(
 
   return [
     systemPrompt,
-    contextBlock ? `\n\nHistorical Jira ticket context:\n${contextBlock}` : '',
+    contextBlock ? `\n\n${contextLabel}:\n${contextBlock}` : '',
     historyBlock,
-    `\n\nUser question:\n${userPrompt}`,
+    `\n\n${userLabel}:\n${userPrompt}`,
   ].join('');
 }
+
+export type GitlabChatOptions = {
+  userLabel?: string;
+  contextLabel?: string;
+  /** Short tag for GraphQL reply matching (e.g. "security: package.json") */
+  graphqlUserTag?: string;
+  graphqlMaxAttempts?: number;
+  /** Wait for JSON-shaped replies; accept prose after many poll attempts */
+  securityMode?: boolean;
+};
 
 /**
  * GitLab Duo — REST chat/completions returns 404 on GitLab.com.
@@ -95,7 +110,8 @@ export async function gitlabChatCompletion(
   systemPrompt: string,
   userPrompt: string,
   history: ChatMessage[] = [],
-  additionalContext: ChatContextItem[] = []
+  additionalContext: ChatContextItem[] = [],
+  options: GitlabChatOptions = {}
 ): Promise<string> {
   if (!config.gitlabUrl || !config.gitlabToken) {
     throw new Error('GitLab Duo requires GITLAB_URL and GITLAB_TOKEN in .env');
@@ -106,7 +122,11 @@ export async function gitlabChatCompletion(
     throw new Error(setup.tokenError || 'GitLab Duo is not configured');
   }
 
-  const fullContent = buildFullPrompt(systemPrompt, userPrompt, history, additionalContext);
+  const fullContent = buildFullPrompt(systemPrompt, userPrompt, history, additionalContext, {
+    userLabel: options.userLabel,
+    contextLabel: options.contextLabel,
+  });
+  const graphqlTag = options.graphqlUserTag || userPrompt.slice(0, 120);
 
   // GitLab.com: REST endpoint not available (404) — use GraphQL
   const useGraphql =
@@ -115,7 +135,10 @@ export async function gitlabChatCompletion(
 
   if (useGraphql) {
     try {
-      return await gitlabChatViaGraphql(fullContent, userPrompt);
+      return await gitlabChatViaGraphql(fullContent, graphqlTag, {
+        maxAttempts: options.graphqlMaxAttempts,
+        securityMode: options.securityMode,
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'GraphQL chat failed';
       throw new Error(`GitLab Duo (GraphQL): ${msg}`);
@@ -148,7 +171,10 @@ export async function gitlabChatCompletion(
     );
 
     if (status === 404) {
-      return await gitlabChatViaGraphql(fullContent, userPrompt);
+      return await gitlabChatViaGraphql(fullContent, graphqlTag, {
+        maxAttempts: options.graphqlMaxAttempts,
+        securityMode: options.securityMode,
+      });
     }
 
     if (status >= 400) {
@@ -168,8 +194,81 @@ export async function gitlabChatCompletion(
     return String(data);
   } catch (err) {
     if (axios.isAxiosError(err) && err.response?.status === 404) {
-      return await gitlabChatViaGraphql(fullContent, userPrompt);
+      return await gitlabChatViaGraphql(fullContent, graphqlTag, {
+        maxAttempts: options.graphqlMaxAttempts,
+        securityMode: options.securityMode,
+      });
     }
     throw new Error(formatGitlabError(err));
+  }
+}
+
+function extractRestChatBody(data: string | Record<string, unknown> | null | undefined): string | null {
+  if (typeof data === 'string' && data.trim()) return data;
+  if (typeof data === 'object' && data !== null) {
+    const obj = data as Record<string, unknown>;
+    if (typeof obj.content === 'string' && obj.content.trim()) return obj.content;
+    if (typeof obj.response === 'string' && obj.response.trim()) return obj.response;
+  }
+  return null;
+}
+
+/**
+ * GitLab Duo code security — same routes as Jira chat (REST, then GraphQL on 404 / non-JSON).
+ */
+export async function gitlabSecurityCompletion(
+  systemPrompt: string,
+  filePath: string,
+  codeSnippet: string
+): Promise<string | null> {
+  if (!config.gitlabUrl || !config.gitlabToken) return null;
+
+  const setup = await getGitlabSetupStatusAsync();
+  if (!setup.ready) return null;
+
+  const graphqlTag = `security-review:${filePath}`;
+  const strictSystem = `${systemPrompt}\nOutput ONLY raw JSON with keys "findings" and "summary". No markdown.`;
+  const compactContent = [strictSystem, `File: ${filePath}`, codeSnippet].join('\n\n');
+
+  const url = `${config.gitlabUrl}/api/v4/chat/completions`;
+  let restBody: string | null = null;
+
+  try {
+    const { data, status } = await axios.post<string | Record<string, unknown>>(
+      url,
+      {
+        content: compactContent,
+        with_clean_history: true,
+        ...(config.gitlabProjectId ? { project_id: config.gitlabProjectId } : {}),
+      },
+      { headers: gitlabHeaders(), timeout: 90000, validateStatus: () => true }
+    );
+
+    if (status < 400 && status !== 404) {
+      restBody = extractRestChatBody(data);
+      if (restBody && parseJsonFromLlm(restBody)) {
+        return restBody;
+      }
+      if (restBody) {
+        console.warn(`[gitlab-security] REST returned prose for ${filePath}, trying GraphQL...`);
+      }
+    } else if (status === 404) {
+      console.warn(`[gitlab-security] REST 404 for ${filePath}, using GraphQL (same as Jira chat)...`);
+    }
+  } catch (err) {
+    console.warn('[gitlab-security] REST failed:', err instanceof Error ? err.message : err);
+  }
+
+  try {
+    return await gitlabChatViaGraphql(compactContent, graphqlTag, {
+      maxAttempts: 45,
+      securityMode: true,
+    });
+  } catch (err) {
+    console.warn(
+      `[gitlab-security] GraphQL failed for ${filePath}:`,
+      err instanceof Error ? err.message : err
+    );
+    return restBody;
   }
 }
