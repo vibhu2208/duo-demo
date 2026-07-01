@@ -494,7 +494,7 @@ export function AdminSyncPage() {
             <CardHeader>
               <CardTitle className="text-lg">Sync Historical Tickets</CardTitle>
               <CardDescription>
-                Fetches the latest matching tickets (max {config?.syncMaxTickets ?? 30} per run), stores in PostgreSQL, generates embeddings
+                Fetches only new tickets (already-synced tickets are skipped), stores in PostgreSQL, generates embeddings
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -513,8 +513,9 @@ export function AdminSyncPage() {
               )}
               {syncMutation.isSuccess && (
                 <div className="mt-4 p-4 bg-green-50 dark:bg-green-950 rounded-md text-sm">
-                  <p>Fetched: {syncMutation.data.fetched}</p>
-                  <p>Created: {syncMutation.data.created} · Updated: {syncMutation.data.updated}</p>
+                  <p>Fetched from Jira: {syncMutation.data.fetched}</p>
+                  <p>New tickets added: {syncMutation.data.created}</p>
+                  <p>Already in database (skipped): {syncMutation.data.skipped}</p>
                   <p>Embeddings indexed: {syncMutation.data.embeddingsIndexed}</p>
                 </div>
               )}
@@ -609,6 +610,7 @@ export function AdminSyncPage() {
               status: string;
               tickets_fetched: number;
               tickets_created: number;
+              tickets_updated: number;
               embeddings_indexed: number;
               error_message?: string;
             }) => (
@@ -616,7 +618,7 @@ export function AdminSyncPage() {
                 <div className="flex justify-between">
                   <span>{new Date(l.started_at).toLocaleString()}</span>
                   <span>
-                    {l.status} · {l.tickets_fetched} fetched · {l.embeddings_indexed} embedded
+                    {l.status} · {l.tickets_created} new · {l.tickets_updated} skipped · {l.embeddings_indexed} embedded
                   </span>
                 </div>
                 {l.error_message && (

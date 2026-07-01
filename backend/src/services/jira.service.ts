@@ -182,7 +182,6 @@ export interface JiraConnectionTestResult {
     syncFilter?: string;
     syncFilterLabel?: string;
     matchingTicketCount?: number;
-    syncMaxTickets?: number;
     insecureSsl?: boolean;
     testedAt: string;
   };
@@ -304,7 +303,6 @@ export async function testJiraConnection(
         params: { jql, startAt: 0, maxResults: 0 },
       });
       details.matchingTicketCount = searchResult.total ?? 0;
-      details.syncMaxTickets = config.jira.syncMaxTickets;
     } catch {
       // search may fail even when auth works — reported separately if needed
     }
@@ -316,9 +314,7 @@ export async function testJiraConnection(
       message += ` Project "${cfg.projectKey}" (${details.projectName}) is accessible.`;
     }
     if (details.matchingTicketCount !== undefined) {
-      const cap = details.syncMaxTickets ?? config.jira.syncMaxTickets;
-      const pull = Math.min(cap, details.matchingTicketCount);
-      message += ` ${pull} of ${details.matchingTicketCount} matching ticket(s) will be synced (latest ${cap} max).`;
+      message += ` ${details.matchingTicketCount} ticket(s) match your sync filter.`;
     }
 
     return {
@@ -409,15 +405,14 @@ async function fetchResolvedIssues(
   deploymentType: JiraDeploymentType,
   projectKey: string,
   syncFilter: JiraSyncFilter,
-  startAt = 0,
-  maxResults = 50
+  startAt = 0
 ) {
   const jql = buildSyncIssuesJql(projectKey, deploymentType, syncFilter);
 
   const params = {
     jql,
     startAt,
-    maxResults,
+    maxResults: 50,
     fields:
       'summary,description,status,priority,labels,assignee,reporter,created,resolution,resolutiondate,comment,issuetype',
   };
@@ -431,26 +426,16 @@ async function fetchAllIssues(
   client: AxiosInstance,
   deploymentType: JiraDeploymentType,
   projectKey: string,
-  syncFilter: JiraSyncFilter,
-  maxTickets = config.jira.syncMaxTickets
+  syncFilter: JiraSyncFilter
 ) {
   const issues: Record<string, unknown>[] = [];
   let startAt = 0;
   let total = 1;
-  const limit = Math.max(1, maxTickets);
 
-  while (startAt < total && issues.length < limit) {
-    const remaining = limit - issues.length;
-    const data = await fetchResolvedIssues(
-      client,
-      deploymentType,
-      projectKey,
-      syncFilter,
-      startAt,
-      Math.min(50, remaining)
-    );
+  while (startAt < total) {
+    const data = await fetchResolvedIssues(client, deploymentType, projectKey, syncFilter, startAt);
     const batch = (data.issues || []) as Record<string, unknown>[];
-    issues.push(...batch.slice(0, remaining));
+    issues.push(...batch);
     total = data.total as number;
     startAt += batch.length;
     if (batch.length === 0) break;
@@ -525,6 +510,7 @@ export async function syncJiraTickets(userId: string): Promise<{
   fetched: number;
   created: number;
   updated: number;
+  skipped: number;
   embeddingsIndexed: number;
 }> {
   const cfg = await getJiraConfigForUser(userId);
@@ -539,8 +525,13 @@ export async function syncJiraTickets(userId: string): Promise<{
   const logId = log.rows[0].id;
 
   let created = 0;
-  let updated = 0;
+  let skipped = 0;
   let embeddingsIndexed = 0;
+
+  const { rows: existingRows } = await query<{ jira_key: string }>(
+    'SELECT jira_key FROM jira_tickets'
+  );
+  const knownKeys = new Set(existingRows.map((r) => r.jira_key));
 
   try {
     const issues = await fetchAllIssues(client, cfg.deploymentType, projectKey, cfg.syncFilter);
@@ -548,76 +539,42 @@ export async function syncJiraTickets(userId: string): Promise<{
     for (const issue of issues) {
       const parsed = parseIssue(issue);
 
-      const existing = await query<{ id: string }>(
-        'SELECT id FROM jira_tickets WHERE jira_key = $1',
-        [parsed.jiraKey]
-      );
-
-      let ticketId: string;
-
-      if (existing.rows[0]) {
-        ticketId = existing.rows[0].id;
-        await query(
-          `UPDATE jira_tickets SET
-            title=$2, description=$3, status=$4, priority=$5, labels=$6,
-            assignee=$7, reporter=$8, issue_type=$9, resolution=$10,
-            resolution_notes=$11, final_fix=$12, resolution_time_hours=$13,
-            created_at_jira=$14, resolved_at_jira=$15, raw_payload=$16,
-            embedding_synced=false, updated_at=NOW(), synced_at=NOW()
-           WHERE id=$1`,
-          [
-            ticketId,
-            parsed.title,
-            parsed.description,
-            parsed.status,
-            parsed.priority,
-            parsed.labels,
-            parsed.assignee,
-            parsed.reporter,
-            parsed.issueType,
-            parsed.resolution,
-            parsed.resolutionNotes,
-            parsed.finalFix,
-            parsed.resolutionTimeHours,
-            parsed.createdAtJira,
-            parsed.resolvedAtJira,
-            JSON.stringify(parsed.rawPayload),
-          ]
-        );
-        updated++;
-      } else {
-        const ins = await query<{ id: string }>(
-          `INSERT INTO jira_tickets (
-            jira_key, jira_id, title, description, status, priority, labels,
-            assignee, reporter, issue_type, resolution, resolution_notes, final_fix,
-            resolution_time_hours, created_at_jira, resolved_at_jira, raw_payload
-          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
-          RETURNING id`,
-          [
-            parsed.jiraKey,
-            parsed.jiraId,
-            parsed.title,
-            parsed.description,
-            parsed.status,
-            parsed.priority,
-            parsed.labels,
-            parsed.assignee,
-            parsed.reporter,
-            parsed.issueType,
-            parsed.resolution,
-            parsed.resolutionNotes,
-            parsed.finalFix,
-            parsed.resolutionTimeHours,
-            parsed.createdAtJira,
-            parsed.resolvedAtJira,
-            JSON.stringify(parsed.rawPayload),
-          ]
-        );
-        ticketId = ins.rows[0].id;
-        created++;
+      if (knownKeys.has(parsed.jiraKey)) {
+        skipped++;
+        continue;
       }
 
-      await query('DELETE FROM ticket_comments WHERE ticket_id = $1', [ticketId]);
+      const ins = await query<{ id: string }>(
+        `INSERT INTO jira_tickets (
+          jira_key, jira_id, title, description, status, priority, labels,
+          assignee, reporter, issue_type, resolution, resolution_notes, final_fix,
+          resolution_time_hours, created_at_jira, resolved_at_jira, raw_payload
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+        RETURNING id`,
+        [
+          parsed.jiraKey,
+          parsed.jiraId,
+          parsed.title,
+          parsed.description,
+          parsed.status,
+          parsed.priority,
+          parsed.labels,
+          parsed.assignee,
+          parsed.reporter,
+          parsed.issueType,
+          parsed.resolution,
+          parsed.resolutionNotes,
+          parsed.finalFix,
+          parsed.resolutionTimeHours,
+          parsed.createdAtJira,
+          parsed.resolvedAtJira,
+          JSON.stringify(parsed.rawPayload),
+        ]
+      );
+      const ticketId = ins.rows[0].id;
+      knownKeys.add(parsed.jiraKey);
+      created++;
+
       for (const c of parsed.comments) {
         await query(
           `INSERT INTO ticket_comments (ticket_id, jira_comment_id, author, body, created_at_jira)
@@ -656,7 +613,7 @@ export async function syncJiraTickets(userId: string): Promise<{
     await query(
       `UPDATE sync_logs SET completed_at=NOW(), tickets_fetched=$2, tickets_created=$3,
        tickets_updated=$4, embeddings_indexed=$5, status='completed' WHERE id=$1`,
-      [logId, issues.length, created, updated, embeddingsIndexed]
+      [logId, issues.length, created, skipped, embeddingsIndexed]
     );
 
     await query(
@@ -665,7 +622,7 @@ export async function syncJiraTickets(userId: string): Promise<{
       [userId]
     ).catch(() => {});
 
-    return { fetched: issues.length, created, updated, embeddingsIndexed };
+    return { fetched: issues.length, created, updated: 0, skipped, embeddingsIndexed };
   } catch (err) {
     let msg = formatJiraApiError(err);
     if (/ECONNREFUSED|ENOTFOUND|ETIMEDOUT/i.test(msg)) {

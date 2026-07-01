@@ -25,7 +25,6 @@ export const config = {
     syncFilter: (process.env.JIRA_SYNC_FILTER || 'resolved') as 'resolved' | 'closed' | 'both',
     // Set true for internal instances with self-signed TLS certificates
     insecureSsl: process.env.JIRA_INSECURE_SSL === 'true',
-    syncMaxTickets: parseInt(process.env.JIRA_SYNC_MAX_TICKETS || '30', 10),
   },
   seed: {
     email: process.env.SEED_ADMIN_EMAIL || 'admin@example.com',
