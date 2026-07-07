@@ -55,7 +55,6 @@ function NewScanModal({
   });
 
   const projects: GitLabProject[] = projectsData?.projects || [];
-  const selected = projects.find((p) => p.projectPath === selectedProject);
 
   const handleProjectChange = (projectPath: string) => {
     setSelectedProject(projectPath);
