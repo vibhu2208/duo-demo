@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { RefreshCw, CheckCircle, AlertCircle, PlugZap, XCircle, Shield } from 'lucide-react';
-import { jiraApi, gitlabApi, getApiErrorMessage, type JiraConnectionTestResult, type GitLabConnectionTestResult } from '@/lib/api';
+import { jiraApi, githubApi, getApiErrorMessage, type JiraConnectionTestResult, type GitHubConnectionTestResult } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -132,7 +132,7 @@ function ConnectionTestPanel({ result }: { result: JiraConnectionTestResult }) {
   );
 }
 
-function GitLabConnectionTestPanel({ result }: { result: GitLabConnectionTestResult }) {
+function GitHubConnectionTestPanel({ result }: { result: GitHubConnectionTestResult }) {
   const isSuccess = result.authorization === 'success';
 
   return (
@@ -147,22 +147,16 @@ function GitLabConnectionTestPanel({ result }: { result: GitLabConnectionTestRes
         {result.message}
       </p>
       <dl className="grid gap-1 text-muted-foreground">
-        {result.details.baseUrl && (
+        {result.details.login && (
           <div className="flex gap-2">
-            <dt className="font-medium text-foreground min-w-[140px]">GitLab URL</dt>
-            <dd className="break-all">{result.details.baseUrl}</dd>
+            <dt className="font-medium text-foreground min-w-[140px]">GitHub user</dt>
+            <dd>{result.details.name || result.details.login}</dd>
           </div>
         )}
-        {result.details.username && (
+        {result.details.repoCount != null && (
           <div className="flex gap-2">
-            <dt className="font-medium text-foreground min-w-[140px]">GitLab user</dt>
-            <dd>{result.details.name || result.details.username}</dd>
-          </div>
-        )}
-        {result.details.projectCount != null && (
-          <div className="flex gap-2">
-            <dt className="font-medium text-foreground min-w-[140px]">Accessible projects</dt>
-            <dd>{result.details.projectCount}</dd>
+            <dt className="font-medium text-foreground min-w-[140px]">Accessible repos</dt>
+            <dd>{result.details.repoCount}</dd>
           </div>
         )}
         <div className="flex gap-2">
@@ -184,11 +178,9 @@ export function AdminSyncPage() {
   const [syncFilter, setSyncFilter] = useState<JiraSyncFilter>('closed');
   const [insecureSsl, setInsecureSsl] = useState(false);
   const [connectionTest, setConnectionTest] = useState<JiraConnectionTestResult | null>(null);
-  const [gitlabBaseUrl, setGitlabBaseUrl] = useState('https://gitlab.engine-onprem.capgemini.com');
-  const [gitlabToken, setGitlabToken] = useState('');
-  const [gitlabGroup, setGitlabGroup] = useState('');
-  const [gitlabInsecureSsl, setGitlabInsecureSsl] = useState(false);
-  const [gitlabTestResult, setGitlabTestResult] = useState<GitLabConnectionTestResult | null>(null);
+  const [githubToken, setGithubToken] = useState('');
+  const [githubOwner, setGithubOwner] = useState('');
+  const [githubTestResult, setGithubTestResult] = useState<GitHubConnectionTestResult | null>(null);
 
   const { data: config, refetch } = useQuery({
     queryKey: ['jira-config'],
@@ -205,17 +197,15 @@ export function AdminSyncPage() {
     if (config.insecureSsl) setInsecureSsl(config.insecureSsl);
   }, [config]);
 
-  const { data: gitlabConfig, refetch: refetchGitlab } = useQuery({
-    queryKey: ['gitlab-config'],
-    queryFn: gitlabApi.config,
+  const { data: githubConfig, refetch: refetchGithub } = useQuery({
+    queryKey: ['github-config'],
+    queryFn: githubApi.config,
   });
 
   useEffect(() => {
-    if (!gitlabConfig) return;
-    if (gitlabConfig.baseUrl) setGitlabBaseUrl(gitlabConfig.baseUrl);
-    if (gitlabConfig.defaultGroup) setGitlabGroup(gitlabConfig.defaultGroup);
-    if (gitlabConfig.insecureSsl) setGitlabInsecureSsl(gitlabConfig.insecureSsl);
-  }, [gitlabConfig]);
+    if (!githubConfig) return;
+    if (githubConfig.defaultOwner) setGithubOwner(githubConfig.defaultOwner);
+  }, [githubConfig]);
 
   const { data: logs } = useQuery({
     queryKey: ['sync-logs'],
@@ -259,30 +249,26 @@ export function AdminSyncPage() {
     onSuccess: () => refetch(),
   });
 
-  const saveGitlabMutation = useMutation({
+  const saveGithubMutation = useMutation({
     mutationFn: () =>
-      gitlabApi.saveConfig({
-        baseUrl: gitlabBaseUrl,
-        token: gitlabToken || undefined,
-        defaultGroup: gitlabGroup || undefined,
-        insecureSsl: gitlabInsecureSsl,
+      githubApi.saveConfig({
+        token: githubToken || undefined,
+        defaultOwner: githubOwner || undefined,
       }),
     onSuccess: () => {
-      refetchGitlab();
-      setGitlabToken('');
-      testGitlabMutation.mutate();
+      refetchGithub();
+      setGithubToken('');
+      testGithubMutation.mutate();
     },
   });
 
-  const testGitlabMutation = useMutation({
+  const testGithubMutation = useMutation({
     mutationFn: () =>
-      gitlabApi.testConnection({
-        baseUrl: gitlabBaseUrl,
-        token: gitlabToken || undefined,
-        defaultGroup: gitlabGroup || undefined,
-        insecureSsl: gitlabInsecureSsl,
+      githubApi.testConnection({
+        token: githubToken || undefined,
+        defaultOwner: githubOwner || undefined,
       }),
-    onSuccess: (data) => setGitlabTestResult(data),
+    onSuccess: (data) => setGithubTestResult(data),
   });
 
   const isAdmin = user?.role === 'admin';
@@ -552,88 +538,71 @@ export function AdminSyncPage() {
           <CardHeader>
             <div className="flex items-center gap-2">
               <Shield className="h-5 w-5 text-primary" />
-              <CardTitle>GitLab Connection (On-Prem)</CardTitle>
+              <CardTitle>GitHub Connection (Code Security)</CardTitle>
             </div>
             <CardDescription>
-              Connect to Capgemini GitLab on-prem with a Personal Access Token (scope:{' '}
-              <code className="text-xs">api</code>) to browse projects and run AI security scans.
+              Connect with a GitHub Personal Access Token (scope:{' '}
+              <code className="text-xs">repo</code>) to scan one file at a time from your repositories.
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {gitlabConfig?.configured && (
+            {githubConfig?.configured && (
               <div className="mb-4 flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
                 <CheckCircle className="h-4 w-4" />
-                GitLab configured
-                {gitlabConfig.source === 'environment' && ' (from environment)'}
-                {gitlabConfig.username && ` — ${gitlabConfig.username}`}
+                GitHub configured
+                {githubConfig.source === 'environment' && ' (from environment)'}
+                {githubConfig.login && ` — ${githubConfig.login}`}
               </div>
             )}
 
             <div className="space-y-4 max-w-lg">
               <div>
-                <label className="text-sm font-medium">GitLab URL</label>
-                <Input
-                  value={gitlabBaseUrl}
-                  onChange={(e) => setGitlabBaseUrl(e.target.value)}
-                  placeholder="https://gitlab.engine-onprem.capgemini.com"
-                />
-              </div>
-              <div>
                 <label className="text-sm font-medium">Personal Access Token</label>
                 <Input
                   type="password"
-                  value={gitlabToken}
-                  onChange={(e) => setGitlabToken(e.target.value)}
-                  placeholder={gitlabConfig?.configured ? '••••••••' : 'glpat-...'}
+                  value={githubToken}
+                  onChange={(e) => setGithubToken(e.target.value)}
+                  placeholder={githubConfig?.configured ? '••••••••' : 'ghp_...'}
                 />
                 <p className="mt-1 text-xs text-muted-foreground">
                   Leave blank when saving to keep the token already stored in the database.
                 </p>
               </div>
               <div>
-                <label className="text-sm font-medium">Default group (optional)</label>
+                <label className="text-sm font-medium">Default org/user (optional)</label>
                 <Input
-                  value={gitlabGroup}
-                  onChange={(e) => setGitlabGroup(e.target.value)}
-                  placeholder="capgemini/team-name"
+                  value={githubOwner}
+                  onChange={(e) => setGithubOwner(e.target.value)}
+                  placeholder="your-org-or-username"
                 />
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Limits project list to a GitLab group; leave empty for all your projects.
+                  Limits repo list to an organization; leave empty for all accessible repos.
                 </p>
               </div>
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={gitlabInsecureSsl}
-                  onChange={(e) => setGitlabInsecureSsl(e.target.checked)}
-                  className="rounded border-input"
-                />
-                Allow self-signed certificate (internal GitLab)
-              </label>
               <div className="flex flex-wrap gap-2">
                 <Button
-                  onClick={() => saveGitlabMutation.mutate()}
-                  disabled={saveGitlabMutation.isPending}
+                  onClick={() => saveGithubMutation.mutate()}
+                  disabled={saveGithubMutation.isPending}
                 >
-                  Save GitLab Config
+                  Save GitHub Config
                 </Button>
                 <Button
                   variant="outline"
-                  onClick={() => testGitlabMutation.mutate()}
-                  disabled={testGitlabMutation.isPending}
+                  onClick={() => testGithubMutation.mutate()}
+                  disabled={testGithubMutation.isPending}
                 >
                   <PlugZap className="h-4 w-4 mr-2" />
                   Test Connection
                 </Button>
               </div>
-              {saveGitlabMutation.isError && (
+              {saveGithubMutation.isError && (
                 <p className="text-sm text-red-600">
-                  {getApiErrorMessage(saveGitlabMutation.error, 'Failed to save GitLab configuration')}
+                  {getApiErrorMessage(saveGithubMutation.error, 'Failed to save GitHub configuration')}
                 </p>
               )}
             </div>
 
-            {gitlabTestResult && <GitLabConnectionTestPanel result={gitlabTestResult} />}
+            {githubTestResult && <GitHubConnectionTestPanel result={githubTestResult} />}
           </CardContent>
         </Card>
       )}

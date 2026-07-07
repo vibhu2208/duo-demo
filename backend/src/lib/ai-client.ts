@@ -102,6 +102,7 @@ export const aiClient: {
     files: { path: string; language: string; content: string }[];
     repo: string;
     branch: string;
+    mode?: 'default' | 'single-file-sections';
   }) => Promise<CodeReviewResult>;
 } = {
   async health() {
@@ -174,6 +175,7 @@ export const aiClient: {
     files: { path: string; language: string; content: string }[];
     repo: string;
     branch: string;
+    mode?: 'default' | 'single-file-sections';
   }) {
     try {
       return await withRetry(

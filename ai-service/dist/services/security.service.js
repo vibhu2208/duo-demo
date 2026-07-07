@@ -4,6 +4,9 @@ import { parseJsonFromLlm } from '../lib/json-utils.js';
 const BATCH_CHAR_LIMIT = 12000;
 const DUO_MAX_FILE_CHARS = 500;
 const DUO_MAX_FILES = 6;
+const SECTION_CHAR_LIMIT = 400;
+const MAX_SECTIONS = 8;
+const SECTION_SLEEP_MS = 300;
 const SYSTEM_PROMPT = `You are an expert application security engineer performing static code review.
 Analyze the provided source files for security vulnerabilities.
 
@@ -331,6 +334,158 @@ async function reviewWithDuo(files, repo, branch) {
 function sleep(ms) {
     return new Promise((r) => setTimeout(r, ms));
 }
+function splitFileIntoSections(content, maxChars = SECTION_CHAR_LIMIT, maxSections = MAX_SECTIONS) {
+    const lines = content.split('\n');
+    const sections = [];
+    let lineIdx = 0;
+    while (lineIdx < lines.length && sections.length < maxSections) {
+        let chunk = '';
+        const startLine = lineIdx + 1;
+        while (lineIdx < lines.length) {
+            const next = lines[lineIdx];
+            if (chunk.length + next.length + 1 > maxChars && chunk.length > 0)
+                break;
+            chunk += (chunk ? '\n' : '') + next;
+            lineIdx++;
+            if (chunk.length >= maxChars)
+                break;
+        }
+        if (!chunk)
+            break;
+        sections.push({
+            content: chunk,
+            lineStart: startLine,
+            lineEnd: lineIdx,
+            sectionIndex: sections.length + 1,
+        });
+    }
+    return sections;
+}
+function offsetFindingLines(finding, section) {
+    const lineStart = finding.lineStart != null ? section.lineStart + finding.lineStart - 1 : section.lineStart;
+    const lineEnd = finding.lineEnd != null ? section.lineStart + finding.lineEnd - 1 : section.lineEnd;
+    return {
+        ...finding,
+        lineStart,
+        lineEnd,
+    };
+}
+async function reviewSectionWithDuo(file, section, _repo, _branch) {
+    const snippet = section.content;
+    const userPrompt = [
+        `Review this code section for security vulnerabilities. JSON only.`,
+        `filePath in each finding must be: ${file.path}`,
+        `lines in this section: ${section.lineStart}-${section.lineEnd} (section ${section.sectionIndex})`,
+        `lineStart/lineEnd in findings must be relative to this section (1 = first line below).`,
+        '',
+        snippet,
+    ].join('\n');
+    let raw = null;
+    try {
+        raw = await duoTaskCompletion(DUO_SYSTEM_PROMPT, userPrompt, `security-section:${file.path}:${section.sectionIndex}`, {
+            securityMode: true,
+            graphqlMaxAttempts: 55,
+        });
+    }
+    catch (err) {
+        console.warn(`[security/review] Duo section pass failed for ${file.path}#${section.sectionIndex}:`, err instanceof Error ? err.message : err);
+    }
+    if (raw && !isDuoRefusal(raw)) {
+        const json = parseJsonFromLlm(raw);
+        if (json) {
+            const findings = findingsFromJson(json, file.path).map((f) => offsetFindingLines(f, section));
+            return {
+                findings,
+                summary: String(json.summary || ''),
+                usedDuo: true,
+            };
+        }
+        const proseFindings = findingsFromProse(raw, file.path).map((f) => offsetFindingLines(f, section));
+        if (proseFindings.length > 0) {
+            return {
+                findings: proseFindings,
+                summary: `Section ${section.sectionIndex} review (natural language).`,
+                usedDuo: true,
+            };
+        }
+    }
+    try {
+        const nlPrompt = [
+            `What security vulnerabilities do you see in this code section of ${file.path}?`,
+            `Lines ${section.lineStart}-${section.lineEnd}. List each issue as a bullet with severity.`,
+            '',
+            snippet,
+        ].join('\n');
+        raw = await duoTaskCompletion('You are an application security engineer reviewing source code.', nlPrompt, `security-section-chat:${file.path}:${section.sectionIndex}`, { graphqlMaxAttempts: 40 });
+        if (raw && !isDuoRefusal(raw)) {
+            const json = parseJsonFromLlm(raw);
+            if (json) {
+                const findings = findingsFromJson(json, file.path).map((f) => offsetFindingLines(f, section));
+                return {
+                    findings,
+                    summary: String(json.summary || ''),
+                    usedDuo: true,
+                };
+            }
+            const proseFindings = findingsFromProse(raw, file.path).map((f) => offsetFindingLines(f, section));
+            if (proseFindings.length > 0) {
+                return {
+                    findings: proseFindings,
+                    summary: `Section ${section.sectionIndex} review.`,
+                    usedDuo: true,
+                };
+            }
+        }
+    }
+    catch (err) {
+        console.warn(`[security/review] Duo section chat failed for ${file.path}#${section.sectionIndex}:`, err instanceof Error ? err.message : err);
+    }
+    const sectionFile = { ...file, content: section.content };
+    const fallback = patternFindingsForFile(sectionFile).map((f) => offsetFindingLines(f, section));
+    return {
+        findings: fallback,
+        summary: fallback.length > 0
+            ? `Pattern checks flagged ${fallback.length} item(s) in section ${section.sectionIndex}.`
+            : `No issues in section ${section.sectionIndex}.`,
+        usedDuo: false,
+    };
+}
+async function reviewSingleFileInSections(file, repo, branch) {
+    if (isManifestFile(file.path)) {
+        return {
+            findings: [],
+            summary: `Skipped manifest file ${file.path}.`,
+        };
+    }
+    const sections = splitFileIntoSections(file.content);
+    if (sections.length === 0) {
+        return { findings: [], summary: `File ${file.path} is empty.` };
+    }
+    const allFindings = [];
+    const summaries = [];
+    let duoOk = 0;
+    let duoFallback = 0;
+    for (const section of sections) {
+        const result = await reviewSectionWithDuo(file, section, repo, branch);
+        allFindings.push(...result.findings);
+        if (result.summary)
+            summaries.push(result.summary);
+        if (result.usedDuo)
+            duoOk++;
+        else
+            duoFallback++;
+        await sleep(SECTION_SLEEP_MS);
+    }
+    const duoNote = duoFallback > 0 && duoOk === 0
+        ? 'GitLab Duo did not respond for any section. '
+        : duoFallback > 0
+            ? `${duoOk}/${sections.length} section(s) via Duo, ${duoFallback} via pattern fallback. `
+            : `All ${sections.length} section(s) analyzed via GitLab Duo. `;
+    return {
+        findings: dedupeFindings(allFindings),
+        summary: `Scanned 1 file (${file.path}) in ${sections.length} section(s) (~${SECTION_CHAR_LIMIT} chars each). ${duoNote}${summaries.slice(0, 2).join(' ') || 'Review completed.'}`,
+    };
+}
 async function reviewBatch(files, repo, branch) {
     if (config.provider === 'mock') {
         return mockSecurityReview(files, repo);
@@ -361,6 +516,15 @@ async function reviewBatch(files, repo, branch) {
 export async function reviewCode(payload) {
     if (payload.files.length === 0) {
         return { findings: [], summary: 'No files provided for review.' };
+    }
+    if (payload.mode === 'single-file-sections' && payload.files.length === 1) {
+        if (config.provider === 'mock') {
+            return mockSecurityReview(payload.files, payload.repo);
+        }
+        if (config.provider === 'gitlab') {
+            return reviewSingleFileInSections(payload.files[0], payload.repo, payload.branch);
+        }
+        return reviewSingleFileInSections(payload.files[0], payload.repo, payload.branch);
     }
     if (config.provider === 'gitlab') {
         return reviewWithDuo(payload.files, payload.repo, payload.branch);

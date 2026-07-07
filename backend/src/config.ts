@@ -36,4 +36,8 @@ export const config = {
     defaultGroup: process.env.GITLAB_DEFAULT_GROUP || '',
     insecureSsl: process.env.GITLAB_INSECURE_SSL === 'true',
   },
+  github: {
+    token: process.env.GITHUB_TOKEN || '',
+    defaultOwner: process.env.GITHUB_DEFAULT_OWNER || '',
+  },
 };

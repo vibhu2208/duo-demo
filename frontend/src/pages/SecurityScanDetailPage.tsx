@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft, ChevronDown, ChevronRight, Shield } from 'lucide-react';
-import { gitlabApi } from '@/lib/api';
+import { githubApi } from '@/lib/api';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, Badge } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 
@@ -96,8 +96,8 @@ export function SecurityScanDetailPage() {
   const [severityFilter, setSeverityFilter] = useState<string>('all');
 
   const { data: scan, isLoading, error } = useQuery({
-    queryKey: ['gitlab-scan', id],
-    queryFn: () => gitlabApi.getScan(id!),
+    queryKey: ['github-scan', id],
+    queryFn: () => githubApi.getScan(id!),
     enabled: !!id,
   });
 

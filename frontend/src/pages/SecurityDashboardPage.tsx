@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import { Shield, AlertTriangle, Scan, Loader2, X } from 'lucide-react';
-import { gitlabApi, getApiErrorMessage, type GitLabProject } from '@/lib/api';
+import { githubApi, getApiErrorMessage, type GitHubRepo } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -34,49 +34,66 @@ function NewScanModal({
   onClose: () => void;
   onSuccess: (scanId: string) => void;
 }) {
-  const [selectedProject, setSelectedProject] = useState('');
+  const [selectedRepo, setSelectedRepo] = useState('');
   const [branch, setBranch] = useState('main');
-  const [manualProject, setManualProject] = useState('');
+  const [selectedFile, setSelectedFile] = useState('');
+  const [manualRepo, setManualRepo] = useState('');
   const [useManual, setUseManual] = useState(false);
 
-  const { data: projectsData, isLoading: projectsLoading, isError: projectsError, error: projectsFetchError } = useQuery({
-    queryKey: ['gitlab-projects'],
-    queryFn: gitlabApi.projects,
+  const repoFullName = useManual ? manualRepo.trim() : selectedRepo;
+  const [owner, repo] = repoFullName.includes('/') ? repoFullName.split('/', 2) : ['', ''];
+
+  const { data: reposData, isLoading: reposLoading, isError: reposError, error: reposFetchError } = useQuery({
+    queryKey: ['github-repos'],
+    queryFn: githubApi.repos,
     enabled: open,
     retry: 1,
   });
 
+  const {
+    data: filesData,
+    isLoading: filesLoading,
+    isError: filesError,
+    error: filesFetchError,
+  } = useQuery({
+    queryKey: ['github-files', owner, repo, branch],
+    queryFn: () => githubApi.files(owner, repo, branch),
+    enabled: open && !!owner && !!repo,
+    retry: 1,
+  });
+
   const scanMutation = useMutation({
-    mutationFn: gitlabApi.scan,
+    mutationFn: githubApi.scan,
     onSuccess: (scan) => {
       onSuccess(scan.id);
       onClose();
     },
   });
 
-  const projects: GitLabProject[] = projectsData?.projects || [];
+  const repos: GitHubRepo[] = reposData?.repos || [];
+  const files: string[] = filesData?.files || [];
 
-  const handleProjectChange = (projectPath: string) => {
-    setSelectedProject(projectPath);
+  const handleRepoChange = (fullName: string) => {
+    setSelectedRepo(fullName);
     setUseManual(false);
-    const project = projects.find((p) => p.projectPath === projectPath);
-    if (project) setBranch(project.defaultBranch);
+    setSelectedFile('');
+    const r = repos.find((p) => p.fullName === fullName);
+    if (r) setBranch(r.defaultBranch);
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const projectPath = useManual ? manualProject.trim() : selectedProject;
-    if (!projectPath) return;
-    scanMutation.mutate({ projectPath, branch });
+    if (!repoFullName || !selectedFile) return;
+    scanMutation.mutate({ repoFullName, branch, filePath: selectedFile });
   };
 
-  const canSubmit = useManual ? !!manualProject.trim() : !!selectedProject;
+  const canSubmit = !!repoFullName && !!selectedFile;
 
   if (!open) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <Card className="w-full max-w-md">
+      <Card className="w-full max-w-lg max-h-[90vh] overflow-y-auto">
         <CardHeader>
           <div className="flex items-center justify-between">
             <CardTitle className="text-lg">New Security Scan</CardTitle>
@@ -84,38 +101,34 @@ function NewScanModal({
               <X className="h-4 w-4" />
             </button>
           </div>
-          <CardDescription>Select a GitLab project to scan with GitLab Duo AI review</CardDescription>
+          <CardDescription>
+            Scan one file from your GitHub repo. The file is reviewed in small sections (~400 chars each) via AI.
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label className="text-sm font-medium">GitLab project</label>
-              {projectsLoading ? (
-                <p className="text-sm text-muted-foreground mt-1">Loading projects...</p>
+              <label className="text-sm font-medium">GitHub repository</label>
+              {reposLoading ? (
+                <p className="text-sm text-muted-foreground mt-1">Loading repositories...</p>
               ) : (
                 <>
                   <select
                     className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
-                    value={useManual ? '' : selectedProject}
-                    onChange={(e) => handleProjectChange(e.target.value)}
+                    value={useManual ? '' : selectedRepo}
+                    onChange={(e) => handleRepoChange(e.target.value)}
                     disabled={useManual}
                   >
-                    <option value="">Select a project</option>
-                    {projects.map((p) => (
-                      <option key={p.projectPath} value={p.projectPath}>
-                        {p.fullName} {p.private ? '(private)' : ''}
+                    <option value="">Select a repository</option>
+                    {repos.map((r) => (
+                      <option key={r.fullName} value={r.fullName}>
+                        {r.fullName} {r.private ? '(private)' : ''}
                       </option>
                     ))}
                   </select>
-                  {projectsError && (
+                  {reposError && (
                     <p className="text-sm text-red-600 mt-2">
-                      {getApiErrorMessage(projectsFetchError, 'Could not load projects')}
-                    </p>
-                  )}
-                  {!projectsLoading && projects.length === 0 && !projectsError && (
-                    <p className="text-sm text-amber-700 dark:text-amber-300 mt-2">
-                      No projects returned. Enter one manually below (e.g.{' '}
-                      <code>capgemini/team/my-project</code>).
+                      {getApiErrorMessage(reposFetchError, 'Could not load repositories')}
                     </p>
                   )}
                 </>
@@ -126,22 +139,68 @@ function NewScanModal({
                 <input
                   type="checkbox"
                   checked={useManual}
-                  onChange={(e) => setUseManual(e.target.checked)}
+                  onChange={(e) => {
+                    setUseManual(e.target.checked);
+                    setSelectedFile('');
+                  }}
                 />
-                Enter project path manually
+                Enter repository manually
               </label>
               {useManual && (
                 <Input
                   className="mt-2"
-                  value={manualProject}
-                  onChange={(e) => setManualProject(e.target.value)}
-                  placeholder="group/subgroup/project-name"
+                  value={manualRepo}
+                  onChange={(e) => {
+                    setManualRepo(e.target.value);
+                    setSelectedFile('');
+                  }}
+                  placeholder="owner/repo"
                 />
               )}
             </div>
             <div>
               <label className="text-sm font-medium">Branch</label>
-              <Input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" />
+              <Input
+                value={branch}
+                onChange={(e) => {
+                  setBranch(e.target.value);
+                  setSelectedFile('');
+                }}
+                placeholder="main"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium">File to scan (one file only)</label>
+              {!owner || !repo ? (
+                <p className="text-sm text-muted-foreground mt-1">Select a repository first.</p>
+              ) : filesLoading ? (
+                <p className="text-sm text-muted-foreground mt-1">Loading files...</p>
+              ) : (
+                <>
+                  <select
+                    className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm font-mono text-xs"
+                    value={selectedFile}
+                    onChange={(e) => setSelectedFile(e.target.value)}
+                  >
+                    <option value="">Select a file</option>
+                    {files.map((f) => (
+                      <option key={f} value={f}>
+                        {f}
+                      </option>
+                    ))}
+                  </select>
+                  {filesError && (
+                    <p className="text-sm text-red-600 mt-2">
+                      {getApiErrorMessage(filesFetchError, 'Could not load files')}
+                    </p>
+                  )}
+                  {!filesLoading && files.length === 0 && !filesError && (
+                    <p className="text-sm text-amber-700 dark:text-amber-300 mt-2">
+                      No scannable source files found on this branch.
+                    </p>
+                  )}
+                </>
+              )}
             </div>
             {scanMutation.isError && (
               <p className="text-sm text-red-600">
@@ -180,21 +239,21 @@ export function SecurityDashboardPage() {
   const queryClient = useQueryClient();
   const [scanModalOpen, setScanModalOpen] = useState(false);
 
-  const { data: config } = useQuery({ queryKey: ['gitlab-config'], queryFn: gitlabApi.config });
+  const { data: config } = useQuery({ queryKey: ['github-config'], queryFn: githubApi.config });
   const { data: stats, isLoading: statsLoading } = useQuery({
-    queryKey: ['gitlab-dashboard'],
-    queryFn: gitlabApi.dashboard,
+    queryKey: ['github-dashboard'],
+    queryFn: githubApi.dashboard,
   });
   const { data: scansData, isLoading: scansLoading } = useQuery({
-    queryKey: ['gitlab-scans'],
-    queryFn: () => gitlabApi.scans({ limit: 20 }),
+    queryKey: ['github-scans'],
+    queryFn: () => githubApi.scans({ limit: 20 }),
   });
 
   const isAdmin = user?.role === 'admin';
 
   const handleScanSuccess = (scanId: string) => {
-    queryClient.invalidateQueries({ queryKey: ['gitlab-scans'] });
-    queryClient.invalidateQueries({ queryKey: ['gitlab-dashboard'] });
+    queryClient.invalidateQueries({ queryKey: ['github-scans'] });
+    queryClient.invalidateQueries({ queryKey: ['github-dashboard'] });
     navigate(`/security/scans/${scanId}`);
   };
 
@@ -207,7 +266,7 @@ export function SecurityDashboardPage() {
             Code Security
           </h2>
           <p className="text-muted-foreground">
-            AI-assisted vulnerability review of GitLab on-prem projects (Capgemini)
+            GitHub codebase scanner — one file at a time, reviewed in small sections for vulnerability detection
           </p>
         </div>
         {isAdmin && (
@@ -219,19 +278,19 @@ export function SecurityDashboardPage() {
       </div>
 
       <div className="rounded-md border border-amber-200 bg-amber-50 dark:bg-amber-950 dark:border-amber-900 p-3 text-sm text-amber-800 dark:text-amber-200">
-        <strong>Advisory only:</strong> Findings are generated by GitLab Duo AI and should be verified before acting.
+        <strong>Advisory only:</strong> Findings are AI-generated from section-by-section review. Verify before acting.
         This is not a substitute for certified SAST tools.
       </div>
 
       {!config?.configured && (
         <div className="rounded-md border p-4 text-sm">
-          GitLab is not configured.{' '}
+          GitHub is not configured.{' '}
           {isAdmin ? (
             <Link to="/admin" className="text-primary underline">
-              Add your GitLab URL and PAT in Sync Settings
+              Add your GitHub Personal Access Token in Sync Settings
             </Link>
           ) : (
-            'Ask an admin to configure GitLab access.'
+            'Ask an admin to configure GitHub access.'
           )}
         </div>
       )}
@@ -280,7 +339,7 @@ export function SecurityDashboardPage() {
       <Card>
         <CardHeader>
           <CardTitle className="text-lg">Recent Scans</CardTitle>
-          <CardDescription>History of AI security reviews on GitLab projects</CardDescription>
+          <CardDescription>History of single-file GitHub security reviews</CardDescription>
         </CardHeader>
         <CardContent>
           {scansLoading ? (
@@ -298,7 +357,7 @@ export function SecurityDashboardPage() {
                   <div className="min-w-0">
                     <p className="font-mono text-sm font-medium">{scan.repoFullName}</p>
                     <p className="text-xs text-muted-foreground">
-                      {scan.branch} · {new Date(scan.startedAt).toLocaleString()} · {scan.filesScanned} files
+                      {scan.branch} · {new Date(scan.startedAt).toLocaleString()} · {scan.filesScanned} file
                     </p>
                   </div>
                   <div className="flex items-center gap-2 flex-wrap">
@@ -314,12 +373,8 @@ export function SecurityDashboardPage() {
                     {scan.findingsCount > 0 && (
                       <span className="text-xs text-muted-foreground">{scan.findingsCount} findings</span>
                     )}
-                    {(scan.severitySummary?.critical ?? 0) > 0 && (
-                      <SeverityBadge severity="critical" />
-                    )}
-                    {(scan.severitySummary?.high ?? 0) > 0 && (
-                      <SeverityBadge severity="high" />
-                    )}
+                    {(scan.severitySummary?.critical ?? 0) > 0 && <SeverityBadge severity="critical" />}
+                    {(scan.severitySummary?.high ?? 0) > 0 && <SeverityBadge severity="high" />}
                     {((scan.severitySummary?.critical ?? 0) > 0 || (scan.severitySummary?.high ?? 0) > 0) && (
                       <AlertTriangle className="h-4 w-4 text-orange-500" />
                     )}

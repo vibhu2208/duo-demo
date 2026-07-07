@@ -189,6 +189,52 @@ export type SecurityFinding = {
   confidence: number | null;
 };
 
+export const githubApi = {
+  config: () => api.get('/github/config').then((r) => r.data),
+  saveConfig: (data: { token?: string; defaultOwner?: string }) =>
+    api.put('/github/config', data).then((r) => r.data),
+  testConnection: (data?: { token?: string; defaultOwner?: string }) =>
+    api.post<GitHubConnectionTestResult>('/github/test-connection', data ?? {}).then((r) => r.data),
+  repos: () => api.get<{ repos: GitHubRepo[] }>('/github/repos').then((r) => r.data),
+  files: (owner: string, repo: string, branch: string) =>
+    api
+      .get<{ files: string[]; sha: string }>(`/github/repos/${owner}/${repo}/files`, { params: { branch } })
+      .then((r) => r.data),
+  dashboard: () => api.get('/github/dashboard').then((r) => r.data),
+  scan: (data: { repoFullName: string; branch?: string; filePath: string }) =>
+    api.post<SecurityScanRun>('/github/scan', data, { timeout: 300000 }).then((r) => r.data),
+  scans: (params?: { limit?: number; offset?: number }) =>
+    api.get<{ scans: SecurityScanRun[]; total: number }>('/github/scans', { params }).then((r) => r.data),
+  getScan: (id: string) =>
+    api.get<SecurityScanRun & { findings: SecurityFinding[] }>(`/github/scans/${id}`).then((r) => r.data),
+  findings: (id: string, params?: { severity?: string; category?: string }) =>
+    api.get<{ findings: SecurityFinding[] }>(`/github/scans/${id}/findings`, { params }).then((r) => r.data),
+};
+
+export type GitHubConnectionTestResult = {
+  ok: boolean;
+  authorization: 'success' | 'failed' | 'not_configured';
+  httpStatus?: number;
+  message: string;
+  details: {
+    login?: string;
+    name?: string;
+    defaultOwner?: string;
+    repoCount?: number;
+    testedAt: string;
+  };
+};
+
+export type GitHubRepo = {
+  fullName: string;
+  name: string;
+  owner: string;
+  defaultBranch: string;
+  private: boolean;
+  description: string | null;
+  webUrl: string | null;
+};
+
 export const gitlabApi = {
   config: () => api.get('/gitlab/config').then((r) => r.data),
   saveConfig: (data: {

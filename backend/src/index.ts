@@ -10,6 +10,7 @@ import chatRoutes from './routes/chat.routes.js';
 import analyticsRoutes from './routes/analytics.routes.js';
 import aiRoutes from './routes/ai.routes.js';
 import gitlabCodeRoutes from './routes/gitlab-code.routes.js';
+import githubCodeRoutes from './routes/github-code.routes.js';
 
 const app = express();
 
@@ -34,6 +35,7 @@ app.use('/api/chat', chatRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/gitlab', gitlabCodeRoutes);
+app.use('/api/github', githubCodeRoutes);
 
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error(err);

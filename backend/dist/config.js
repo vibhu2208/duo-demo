@@ -28,6 +28,12 @@ export const config = {
         email: process.env.SEED_ADMIN_EMAIL || 'admin@example.com',
         password: process.env.SEED_ADMIN_PASSWORD || 'admin123',
     },
+    gitlab: {
+        baseUrl: (process.env.GITLAB_URL || '').replace(/\/$/, ''),
+        token: process.env.GITLAB_TOKEN || process.env.GITLAB_ACCESS_TOKEN || '',
+        defaultGroup: process.env.GITLAB_DEFAULT_GROUP || '',
+        insecureSsl: process.env.GITLAB_INSECURE_SSL === 'true',
+    },
     github: {
         token: process.env.GITHUB_TOKEN || '',
         defaultOwner: process.env.GITHUB_DEFAULT_OWNER || '',

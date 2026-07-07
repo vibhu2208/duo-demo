@@ -141,6 +141,7 @@ const reviewCodeSchema = z.object({
   ),
   repo: z.string(),
   branch: z.string(),
+  mode: z.enum(['default', 'single-file-sections']).optional(),
 });
 
 app.post('/security/review-code', async (req, res) => {
