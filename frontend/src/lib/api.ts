@@ -250,9 +250,13 @@ export const gitlabApi = {
     insecureSsl?: boolean;
   }) => api.post<GitLabConnectionTestResult>('/gitlab/test-connection', data ?? {}).then((r) => r.data),
   projects: () => api.get<{ projects: GitLabProject[] }>('/gitlab/projects').then((r) => r.data),
+  files: (projectPath: string, branch?: string) =>
+    api
+      .get<{ files: string[]; sha: string }>('/gitlab/projects/files', { params: { projectPath, branch } })
+      .then((r) => r.data),
   dashboard: () => api.get('/gitlab/dashboard').then((r) => r.data),
-  scan: (data: { projectPath: string; branch?: string }) =>
-    api.post<SecurityScanRun>('/gitlab/scan', data, { timeout: 180000 }).then((r) => r.data),
+  scan: (data: { projectPath: string; branch?: string; filePath: string }) =>
+    api.post<SecurityScanRun>('/gitlab/scan', data, { timeout: 300000 }).then((r) => r.data),
   scans: (params?: { limit?: number; offset?: number }) =>
     api.get<{ scans: SecurityScanRun[]; total: number }>('/gitlab/scans', { params }).then((r) => r.data),
   getScan: (id: string) =>

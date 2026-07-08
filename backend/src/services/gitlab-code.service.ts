@@ -332,6 +332,16 @@ export async function fetchRepoTree(
   return { sha: commits[0]?.id || '', entries };
 }
 
+export async function listScannableFiles(
+  cfg: GitLabCodeConfig,
+  projectPath: string,
+  branch: string
+): Promise<{ sha: string; files: string[] }> {
+  const client = createGitLabClient(cfg);
+  const { sha, entries } = await fetchRepoTree(client, projectPath, branch);
+  return { sha, files: selectFilesForScan(entries) };
+}
+
 export async function fetchFileContents(
   client: AxiosInstance,
   projectPath: string,
@@ -428,13 +438,15 @@ function mapScanRow(row: {
 
 export async function runSecurityScan(
   userId: string,
-  params: { projectPath: string; branch?: string }
+  params: { projectPath: string; branch?: string; filePath: string }
 ): Promise<SecurityScanRun> {
   const cfg = await getGitLabCodeConfigForUser(userId);
   if (!cfg) throw new Error('GitLab is not configured');
 
   const branch = params.branch || 'main';
   const repoFullName = params.projectPath;
+  const filePath = params.filePath.trim();
+  if (!filePath) throw new Error('filePath is required — select one file to scan');
 
   const { rows: scanRows } = await query<{ id: string }>(
     `INSERT INTO security_scan_runs (user_id, repo_full_name, branch, status)
@@ -451,29 +463,17 @@ export async function runSecurityScan(
 
   try {
     const client = createGitLabClient(cfg);
-    const { sha, entries } = await fetchRepoTree(client, params.projectPath, branch);
-    const paths = selectFilesForScan(entries);
+    const { sha } = await fetchRepoTree(client, params.projectPath, branch);
+    const content = await fetchFileContents(client, params.projectPath, filePath, branch);
 
-    const files: { path: string; language: string; content: string }[] = [];
-    for (const path of paths) {
-      try {
-        const content = await fetchFileContents(client, params.projectPath, path, branch);
-        files.push({ path, language: detectLanguage(path), content });
-      } catch (err) {
-        console.warn(`[gitlab-scan] skip ${path}:`, err instanceof Error ? err.message : err);
-      }
-    }
+    const files = [{ path: filePath, language: detectLanguage(filePath), content }];
 
-    let reviewResult: CodeReviewResult = { findings: [], summary: '' };
-    if (files.length > 0) {
-      reviewResult = await aiClient.reviewCode({
-        files,
-        repo: repoFullName,
-        branch,
-      });
-    } else {
-      reviewResult.summary = 'No scannable source files found in this project branch.';
-    }
+    const reviewResult: CodeReviewResult = await aiClient.reviewCode({
+      files,
+      repo: repoFullName,
+      branch,
+      mode: 'single-file-sections',
+    });
 
     const severitySummary = buildSeveritySummary(reviewResult.findings);
 
@@ -522,7 +522,7 @@ export async function runSecurityScan(
          completed_at = NOW()
        WHERE id = $1
        RETURNING *`,
-      [scanId, sha, files.length, reviewResult.findings.length, JSON.stringify(severitySummary), reviewResult.summary]
+      [scanId, sha, 1, reviewResult.findings.length, JSON.stringify(severitySummary), reviewResult.summary]
     );
 
     await query(

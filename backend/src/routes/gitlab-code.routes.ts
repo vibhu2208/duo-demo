@@ -8,6 +8,7 @@ import {
   saveGitLabCodeConfig,
   testGitLabCodeConnection,
   listAccessibleProjects,
+  listScannableFiles,
   runSecurityScan,
   listSecurityScans,
   getSecurityScan,
@@ -21,7 +22,7 @@ router.use(authMiddleware);
 
 const configSchema = z.object({
   baseUrl: z.string().url(),
-  token: z.string().min(1),
+  token: z.string().optional(),
   defaultGroup: z.string().optional(),
   insecureSsl: z.boolean().optional(),
 });
@@ -36,6 +37,7 @@ const testConnectionSchema = z.object({
 const scanSchema = z.object({
   projectPath: z.string().min(1),
   branch: z.string().optional(),
+  filePath: z.string().min(1),
 });
 
 router.get('/config', async (req: AuthRequest, res) => {
@@ -84,7 +86,12 @@ router.put('/config', adminOnly, async (req: AuthRequest, res) => {
     data = { ...data, token: existing.token };
   }
 
-  await saveGitLabCodeConfig(req.user!.id, data);
+  await saveGitLabCodeConfig(req.user!.id, {
+    baseUrl: data.baseUrl,
+    token: data.token!,
+    defaultGroup: data.defaultGroup,
+    insecureSsl: data.insecureSsl,
+  });
   res.json({ success: true });
 });
 
@@ -115,6 +122,28 @@ router.get('/projects', async (req: AuthRequest, res) => {
         ? err.message
         : 'Failed to list projects';
     console.error('[gitlab/projects]', message);
+    res.status(502).json({ error: message });
+  }
+});
+
+router.get('/projects/files', async (req: AuthRequest, res) => {
+  try {
+    const cfg = await getGitLabCodeConfigForUser(req.user!.id);
+    if (!cfg) return res.status(400).json({ error: 'GitLab is not configured' });
+
+    const projectPath = req.query.projectPath ? String(req.query.projectPath) : '';
+    const branch = req.query.branch ? String(req.query.branch) : 'main';
+    if (!projectPath) return res.status(400).json({ error: 'projectPath query parameter is required' });
+
+    const result = await listScannableFiles(cfg, projectPath, branch);
+    res.json({ files: result.files, sha: result.sha });
+  } catch (err) {
+    const message = isAxiosError(err)
+      ? String((err.response?.data as { message?: string })?.message || err.message)
+      : err instanceof Error
+        ? err.message
+        : 'Failed to list files';
+    console.error('[gitlab/files]', message);
     res.status(502).json({ error: message });
   }
 });

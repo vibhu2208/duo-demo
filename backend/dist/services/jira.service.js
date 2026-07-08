@@ -392,71 +392,45 @@ export async function syncJiraTickets(userId) {
     const log = await query(`INSERT INTO sync_logs (status) VALUES ('running') RETURNING id`);
     const logId = log.rows[0].id;
     let created = 0;
-    let updated = 0;
+    let skipped = 0;
     let embeddingsIndexed = 0;
+    const { rows: existingRows } = await query('SELECT jira_key FROM jira_tickets');
+    const knownKeys = new Set(existingRows.map((r) => r.jira_key));
     try {
         const issues = await fetchAllIssues(client, cfg.deploymentType, projectKey, cfg.syncFilter);
         for (const issue of issues) {
             const parsed = parseIssue(issue);
-            const existing = await query('SELECT id FROM jira_tickets WHERE jira_key = $1', [parsed.jiraKey]);
-            let ticketId;
-            if (existing.rows[0]) {
-                ticketId = existing.rows[0].id;
-                await query(`UPDATE jira_tickets SET
-            title=$2, description=$3, status=$4, priority=$5, labels=$6,
-            assignee=$7, reporter=$8, issue_type=$9, resolution=$10,
-            resolution_notes=$11, final_fix=$12, resolution_time_hours=$13,
-            created_at_jira=$14, resolved_at_jira=$15, raw_payload=$16,
-            embedding_synced=false, updated_at=NOW(), synced_at=NOW()
-           WHERE id=$1`, [
-                    ticketId,
-                    parsed.title,
-                    parsed.description,
-                    parsed.status,
-                    parsed.priority,
-                    parsed.labels,
-                    parsed.assignee,
-                    parsed.reporter,
-                    parsed.issueType,
-                    parsed.resolution,
-                    parsed.resolutionNotes,
-                    parsed.finalFix,
-                    parsed.resolutionTimeHours,
-                    parsed.createdAtJira,
-                    parsed.resolvedAtJira,
-                    JSON.stringify(parsed.rawPayload),
-                ]);
-                updated++;
+            if (knownKeys.has(parsed.jiraKey)) {
+                skipped++;
+                continue;
             }
-            else {
-                const ins = await query(`INSERT INTO jira_tickets (
-            jira_key, jira_id, title, description, status, priority, labels,
-            assignee, reporter, issue_type, resolution, resolution_notes, final_fix,
-            resolution_time_hours, created_at_jira, resolved_at_jira, raw_payload
-          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
-          RETURNING id`, [
-                    parsed.jiraKey,
-                    parsed.jiraId,
-                    parsed.title,
-                    parsed.description,
-                    parsed.status,
-                    parsed.priority,
-                    parsed.labels,
-                    parsed.assignee,
-                    parsed.reporter,
-                    parsed.issueType,
-                    parsed.resolution,
-                    parsed.resolutionNotes,
-                    parsed.finalFix,
-                    parsed.resolutionTimeHours,
-                    parsed.createdAtJira,
-                    parsed.resolvedAtJira,
-                    JSON.stringify(parsed.rawPayload),
-                ]);
-                ticketId = ins.rows[0].id;
-                created++;
-            }
-            await query('DELETE FROM ticket_comments WHERE ticket_id = $1', [ticketId]);
+            const ins = await query(`INSERT INTO jira_tickets (
+          jira_key, jira_id, title, description, status, priority, labels,
+          assignee, reporter, issue_type, resolution, resolution_notes, final_fix,
+          resolution_time_hours, created_at_jira, resolved_at_jira, raw_payload
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+        RETURNING id`, [
+                parsed.jiraKey,
+                parsed.jiraId,
+                parsed.title,
+                parsed.description,
+                parsed.status,
+                parsed.priority,
+                parsed.labels,
+                parsed.assignee,
+                parsed.reporter,
+                parsed.issueType,
+                parsed.resolution,
+                parsed.resolutionNotes,
+                parsed.finalFix,
+                parsed.resolutionTimeHours,
+                parsed.createdAtJira,
+                parsed.resolvedAtJira,
+                JSON.stringify(parsed.rawPayload),
+            ]);
+            const ticketId = ins.rows[0].id;
+            knownKeys.add(parsed.jiraKey);
+            created++;
             for (const c of parsed.comments) {
                 await query(`INSERT INTO ticket_comments (ticket_id, jira_comment_id, author, body, created_at_jira)
            VALUES ($1, $2, $3, $4, $5)`, [ticketId, c.id, c.author, c.body, c.created ? new Date(c.created) : null]);
@@ -485,10 +459,10 @@ export async function syncJiraTickets(userId) {
             }
         }
         await query(`UPDATE sync_logs SET completed_at=NOW(), tickets_fetched=$2, tickets_created=$3,
-       tickets_updated=$4, embeddings_indexed=$5, status='completed' WHERE id=$1`, [logId, issues.length, created, updated, embeddingsIndexed]);
+       tickets_updated=$4, embeddings_indexed=$5, status='completed' WHERE id=$1`, [logId, issues.length, created, skipped, embeddingsIndexed]);
         await query(`UPDATE jira_config SET last_sync_at=NOW(), sync_status='completed', updated_at=NOW()
        WHERE user_id=$1`, [userId]).catch(() => { });
-        return { fetched: issues.length, created, updated, embeddingsIndexed };
+        return { fetched: issues.length, created, updated: 0, skipped, embeddingsIndexed };
     }
     catch (err) {
         let msg = formatJiraApiError(err);
